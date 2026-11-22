@@ -1,0 +1,36 @@
+{
+  "packages": [
+    {
+      "name": "PerplexForge",
+      "description": "Power-integrity workbench for KiCad: DC IR-drop and AC PDN-impedance on your board in 3D (needs Julia).",
+      "description_full": "PerplexForge opens the current board in a 3D power-integrity workbench.\n\n- Classify nets (power / ground / digital) and model components as lumped elements: VRMs, sinks, R, L, ferrite, 0 ohm, capacitors.\n- DC analysis: voltage, IR drop and current density maps on every copper layer, sink voltages, via currents and copper loss.\n- AC analysis: PDN impedance |Z(f)| at every sink with target-impedance checks, plus 3D maps of the noise voltage at any frequency.\n\nRequirements: KiCad 10 with the KiCad API enabled (Preferences > Plugins), and Julia 1.12 or newer (https://julialang.org/install/).\nThe first launch installs PerplexForge's Julia packages, which takes several minutes once.\nYour board is never modified; the simulation setup is saved next to it as <board>.perplex.json.",
+      "identifier": "com.github.hirambenroth.perplexforge",
+      "type": "plugin",
+      "author": {
+        "name": "HiramBenroth",
+        "contact": {
+          "github": "https://github.com/HiramBenroth"
+        }
+      },
+      "license": "MIT",
+      "resources": {
+        "homepage": "https://github.com/HiramBenroth/PerplexForge"
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "status": "stable",
+          "kicad_version": "10.0",
+          "runtime": "ipc",
+          "platforms": [
+            "windows"
+          ],
+          "download_url": "https://github.com/HiramBenroth/PerplexForge/releases/download/v0.1.0/PerplexForge-0.1.0.zip",
+          "download_sha256": "01a0ae9e601ba80fa5f8242c54cab7bff90e108519442d3b835497588d1ba648",
+          "download_size": 100623,
+          "install_size": 258913
+        }
+      ]
+    }
+  ]
+}

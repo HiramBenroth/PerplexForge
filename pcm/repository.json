@@ -1,0 +1,16 @@
+{
+  "$schema": "https://go.kicad.org/pcm/schemas/v1#/definitions/Repository",
+  "name": "PerplexForge add-on repository",
+  "maintainer": {
+    "name": "HiramBenroth",
+    "contact": {
+      "github": "https://github.com/HiramBenroth"
+    }
+  },
+  "packages": {
+    "url": "https://raw.githubusercontent.com/HiramBenroth/PerplexForge/main/pcm/packages.json",
+    "sha256": "ff4800112dce8f69bb7e4e8ad03248b9b132a7d7fb0a4a6f77201431cf719dc8",
+    "update_time_utc": "2026-11-22 07:48:43",
+    "update_timestamp": 1795333723
+  }
+}
