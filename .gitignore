@@ -1,0 +1,12 @@
+# runtime / local files
+perplexforge_plugin.log
+__pycache__/
+*.perplex.json
+*.perplex.recovery.json
+*.perplex.json.tmp
+
+# build output (release zips are attached to GitHub releases, not committed)
+dist/
+
+# test snapshots
+test/snapshots/

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://go.kicad.org/api/schemas/v1",
+  "identifier": "com.perplexforge.workbench",
+  "name": "PerplexForge",
+  "description": "Open the current board in the PerplexForge power/signal integrity workbench.",
+  "runtime": {
+    "type": "python"
+  },
+  "actions": [
+    {
+      "identifier": "open-workbench",
+      "name": "PerplexForge Workbench",
+      "description": "Open the saved copy of this board in the PerplexForge PI/SI workbench",
+      "show-button": true,
+      "scopes": ["pcb"],
+      "entrypoint": "launch_workbench.py",
+      "icons-light": ["icon_light.png", "icon_light@2x.png"],
+      "icons-dark": ["icon_dark.png", "icon_dark@2x.png"]
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+# Builds and publishes a release whenever a version tag (v1.2.3) is pushed.
+# tools/release.ps1 creates and pushes that tag.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Version in Project.toml matches the tag
+        run: |
+          V=$(grep -m1 '^version' Project.toml | cut -d'"' -f2)
+          test "v$V" = "$GITHUB_REF_NAME" || { echo "Project.toml has v$V but the tag is $GITHUB_REF_NAME"; exit 1; }
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+
+      - name: Tests (solvers and setup model; no GUI needed)
+        run: julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("JSON3"); include("test/runtests.jl")'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the KiCad add-on package
+        run: python tools/build_pcm.py --owner "${{ github.repository_owner }}" --version "${GITHUB_REF_NAME#v}" --status stable
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --title "PerplexForge $GITHUB_REF_NAME" --generate-notes
+
+      - name: Publish the add-on repository files (pcm/) on main
+        run: |
+          cp -r pcm "$RUNNER_TEMP/pcm"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+          rm -rf pcm && cp -r "$RUNNER_TEMP/pcm" pcm
+          git add pcm
+          git commit -m "Add-on repository: publish $GITHUB_REF_NAME" || echo "pcm/ unchanged"
+          git push origin main
