@@ -220,6 +220,24 @@ end
     @test root(t.tb) == main(t.e.net_neg)
 end
 
+@testset "mesh: thin pin rotated 45° with an off-centre trace" begin
+    # Like a QFP at 45°: a 0.3 × 1.6 mm pin on a 0.4 mm grid rasterizes into a diagonal
+    # staircase, and its trace starts near the pin's end. The sink must still be fed.
+    rot45 = BP.Pad("1", "smd", "oval", BP.Point(0, 0), 45.0, 0.3, 1.6, 0.0, ["F.Cu"], "+3V3")
+    comps = [part("U1", 2, 5.5, [pad("1", 0, -2.5, 1, 4, "+3V3"), pad("2", 0, 2.5, 1, 4, "GND")]),
+             part("U2", 25, 3, [rot45, pad("2", 0, 5.5, 1, 4, "GND")])]
+    tr = [BP.Trace(BP.Point(25.424, 3.424), BP.Point(19.5, 3), 0.25, "F.Cu", "+3V3")]
+    zs = [zone("F.Cu", "+3V3", rectpts(1, 1, 20, 5)), zone("F.Cu", "GND", rectpts(1, 6, 29, 10))]
+    b = testboard(comps = comps, zones = zs, traces = tr)
+    s = testsetup(b)
+    s.dc["cell_mm"] = 0.4
+    r = solve_dc(b, s)
+    @test r.ok
+    @test length(r.sinks) == 1
+    @test !any(occursin("isn't connected", m) || occursin("ignored", m) for m in r.messages)
+    @test 3.2 < r.sinks[1].v < 3.3
+end
+
 @testset "AC: low frequency matches DC" begin
     b = testboard(comps = strip_parts(), zones = strip_zones())
     s = testsetup(b)

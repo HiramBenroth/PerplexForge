@@ -279,7 +279,7 @@ function build_mesh(board::BoardData, setup::SimSetup; h::Float64 = 0.0, auto_di
             fill_polygon!(netcell[li], g, xs, ys, ni)
             push!(anc, anchor!(anchors, netcell, g, li, v.pos.x, v.pos.y, ni))
         end
-        push!(viarec, (x = v.pos.x, y = v.pos.y, net = ni, anchors = anc, drill = v.drill))
+        push!(viarec, (x = v.pos.x, y = v.pos.y, net = ni, anchors = anc, drill = v.drill, size = v.size))
     end
 
     # ── number the nodes
@@ -312,11 +312,13 @@ function build_mesh(board::BoardData, setup::SimSetup; h::Float64 = 0.0, auto_di
         end
     end
 
-    # standalone pad anchors: tie them to the pad's own cells on that layer
+    # a pad is one piece of metal: tie all of its cells to its anchor on each layer. Without this,
+    # rotated pads (e.g. a QFP at 45°) rasterize into a diagonal staircase of cells that only
+    # touch at corners, and the grid (which links side neighbours) splits them into islands.
     for rec in values(padrec), a in rec.anchors
-        a.i == 0 || continue
         for (l, i, j) in rec.cells
-            l == a.layer && nodeid[l][i, j] != 0 && edge!(m, a.node, nodeid[l][i, j], G_TIE, BR_TIE)
+            k = nodeid[l][i, j]
+            l == a.layer && k != 0 && k != a.node && netcell[l][i, j] == a.net && edge!(m, a.node, k, G_TIE, BR_TIE)
         end
     end
 
@@ -377,8 +379,29 @@ function build_mesh(board::BoardData, setup::SimSetup; h::Float64 = 0.0, auto_di
     end
 
     # ── traces: 1-D branches, subdivided for display
+    # A trace that ends inside a same-net pad or via joins that pad/via's own node. Narrow pads
+    # (e.g. 0.3 mm QFP pins on a 0.4 mm grid) are reduced to a single anchor cell at their
+    # centre, while traces usually end near the pad's edge, in a different cell.
+    targets = Dict{Tuple{Int,Int,Int},Vector{Any}}()      # (layer, 5 mm bucket) → pads / vias
+    tkey(li, x, y) = (li, floor(Int, x / 5), floor(Int, y / 5))
+    function add_target!(a::Anchor, xs, ys)
+        x0, x1 = extrema(xs); y0, y1 = extrema(ys)
+        for bi in floor(Int, x0 / 5):floor(Int, x1 / 5), bj in floor(Int, y0 / 5):floor(Int, y1 / 5)
+            push!(get!(targets, (a.layer, bi, bj), Any[]), (net = a.net, node = a.node, xs = xs, ys = ys))
+        end
+    end
+    for rec in values(padrec), a in rec.anchors
+        isempty(rec.xs) || add_target!(a, rec.xs, rec.ys)
+    end
+    for vr in viarec, a in vr.anchors
+        xs, ys = circle_polygon(vr.x, vr.y, 0.5 * max(vr.size, vr.drill))
+        add_target!(a, xs, ys)
+    end
     junction = Dict{Tuple{Int,Int,Int},Int}()
     function endpoint(li, x, y, ni)
+        for t in get(targets, tkey(li, x, y), Any[])
+            t.net == ni && inpolygon(x, y, t.xs, t.ys) && return t.node
+        end
         i, j = cell_index(g, x, y)
         inbounds(g, i, j) && netcell[li][i, j] == ni && return Int(nodeid[li][i, j])
         return get!(() -> newnode!(m, ni), junction, (li, round(Int, x * 1e4), round(Int, y * 1e4)))

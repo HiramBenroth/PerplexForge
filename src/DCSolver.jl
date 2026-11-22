@@ -98,19 +98,6 @@ function solve_dc(board::BoardData, setup::SimSetup; settings::DCSettings = dc_s
     EA, EB, EG, EK = m.EA, m.EB, m.EG, m.EK
     N = m.nn
 
-    # sources: VRM Norton currents, sink draws
-    b = zeros(N)
-    for t in m.vrm_t
-        R, V = max(t.e.params["Rout"], 1e-6), t.e.params["V"]
-        b[t.tp] += V / R
-        b[t.tn] -= V / R
-    end
-    for t in m.sink_t
-        I = t.e.params["I"]
-        foreach(k -> (b[k] -= I / length(t.P)), t.P)
-        foreach(k -> (b[k] += I / length(t.N)), t.N)
-    end
-
     # ── connected circuits; each needs a reference (its VRM − terminal = 0 V)
     parent = collect(1:N)
     function root(x)
@@ -130,8 +117,31 @@ function solve_dc(board::BoardData, setup::SimSetup; settings::DCSettings = dc_s
         r = root(t.tn)
         haskey(ref_of, r) || (ref_of[r] = t.tn)
     end
+    # sinks: draw current only from the pins whose copper actually reaches a VRM
+    sinks_used = NamedTuple[]
     for t in m.sink_t
-        haskey(ref_of, root(first(t.P))) || push!(msgs, "$(t.e.id): no copper path from $(t.e.net_pos) to any VRM; it is ignored.")
+        P = [k for k in t.P if haskey(ref_of, root(k))]
+        Nn = [k for k in t.N if haskey(ref_of, root(k))]
+        if isempty(P) || isempty(Nn)
+            push!(msgs, "$(t.e.id): no copper path from $(t.e.ref)'s $(isempty(P) ? t.e.net_pos : t.e.net_neg) pins to any VRM; it is ignored.")
+            continue
+        end
+        (length(P) < length(t.P) || length(Nn) < length(t.N)) &&
+            push!(msgs, "$(t.e.id): some of $(t.e.ref)'s pin copper isn't connected; its current is drawn from the connected pins only.")
+        push!(sinks_used, (e = t.e, P = P, N = Nn))
+    end
+
+    # sources: VRM Norton currents, sink draws
+    b = zeros(N)
+    for t in m.vrm_t
+        R, V = max(t.e.params["Rout"], 1e-6), t.e.params["V"]
+        b[t.tp] += V / R
+        b[t.tn] -= V / R
+    end
+    for t in sinks_used
+        I = t.e.params["I"]
+        foreach(k -> (b[k] -= I / length(t.P)), t.P)
+        foreach(k -> (b[k] += I / length(t.N)), t.N)
     end
     newidx = zeros(Int, N)
     nk = 0
@@ -243,7 +253,7 @@ function solve_dc(board::BoardData, setup::SimSetup; settings::DCSettings = dc_s
     end
     mean(xs) = sum(xs) / length(xs)
     sinks = Any[]
-    for t in m.sink_t
+    for t in sinks_used
         vp, vn = mean(v[t.P]), mean(v[t.N])
         nneg = nominal[netidx[t.e.net_neg]]
         nom = nominal[netidx[t.e.net_pos]] - (isnan(nneg) ? 0.0 : nneg)

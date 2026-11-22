@@ -190,12 +190,28 @@ function solve_ac(board::BoardData, setup::SimSetup; settings::ACSettings = ac_s
     end
     ports_t = NamedTuple[]
     for t in m.sink_t
-        r = root(first(t.P))
-        if !haskey(ref_of, r)                     # no VRM in this circuit: reference its − side
-            ref_of[r] = first(t.N)
+        # use the pins whose copper is part of a circuit with a VRM
+        P = [k for k in t.P if haskey(ref_of, root(k))]
+        Nn = [k for k in t.N if haskey(ref_of, root(k)) && any(p -> root(p) == root(k), P)]
+        if isempty(P) || isempty(Nn)
+            # no VRM: reference the port's own − pins, if any are in the same circuit as its + pins
+            pair = nothing
+            for kp in t.P, kn in t.N
+                root(kp) == root(kn) && (pair = (kp, kn); break)
+            end
+            if pair === nothing
+                push!(msgs, "$(t.e.id): $(t.e.ref)'s pins aren't connected to the rest of the circuit; port skipped.")
+                continue
+            end
+            r = root(pair[1])
+            haskey(ref_of, r) || (ref_of[r] = pair[2])
+            P = [k for k in t.P if root(k) == r]
+            Nn = [k for k in t.N if root(k) == r]
             push!(msgs, "$(t.e.id): no VRM connected; impedance referenced to its own − pins.")
         end
-        push!(ports_t, t)
+        (length(P) < length(t.P) || length(Nn) < length(t.N)) &&
+            push!(msgs, "$(t.e.id): some of $(t.e.ref)'s pin copper isn't connected; the port uses the connected pins only.")
+        push!(ports_t, (e = t.e, P = P, N = Nn))
     end
     newidx = zeros(Int, N)
     nk = 0
