@@ -18,17 +18,17 @@
       },
       "versions": [
         {
-          "version": "0.1.1",
+          "version": "0.1.2",
           "status": "stable",
           "kicad_version": "10.0",
           "runtime": "ipc",
           "platforms": [
             "windows"
           ],
-          "download_url": "https://github.com/HiramBenroth/PerplexForge/releases/download/v0.1.1/PerplexForge-0.1.1.zip",
-          "download_sha256": "13520a67ec6781e1e2c84d13870bfbc40d5207fa4625b037e80367114cc7348d",
-          "download_size": 101203,
-          "install_size": 260787
+          "download_url": "https://github.com/HiramBenroth/PerplexForge/releases/download/v0.1.2/PerplexForge-0.1.2.zip",
+          "download_sha256": "63571e2de81589358e00a0d23df91fb135511d15b6ace69cbd4fedb3033bf747",
+          "download_size": 102226,
+          "install_size": 263887
         }
       ]
     }
