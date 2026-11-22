@@ -9,8 +9,8 @@
   },
   "packages": {
     "url": "https://raw.githubusercontent.com/HiramBenroth/PerplexForge/main/pcm/packages.json",
-    "sha256": "cc5a7430f15042a4f122224df71ccd2dd43aaaa1c08279b48e1e3d51d1f385dd",
-    "update_time_utc": "2026-11-22 08:58:53",
-    "update_timestamp": 1795337933
+    "sha256": "8e3b3853416a66117a833a81a8167cd44e7e1a40a36fd3c730897196d0cab518",
+    "update_time_utc": "2026-11-22 09:12:37",
+    "update_timestamp": 1795338757
   }
 }
