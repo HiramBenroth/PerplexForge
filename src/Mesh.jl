@@ -135,6 +135,52 @@ end
 
 newnode!(m::Mesh, ni) = (m.nn += 1; push!(m.node_net, Int32(ni)); m.nn)
 
+"Even-odd point-in-polygon test."
+function inpolygon(x, y, xs, ys)
+    inside = false
+    n = length(xs)
+    j = n
+    @inbounds for i in 1:n
+        if (ys[i] > y) != (ys[j] > y) && x < (xs[j] - xs[i]) * (y - ys[i]) / (ys[j] - ys[i]) + xs[i]
+            inside = !inside
+        end
+        j = i
+    end
+    return inside
+end
+
+"""
+Tie every via to each same-net pad it sits inside, on every layer both have an anchor on.
+Pads are bucketed on a 5 mm grid so large boards stay fast. Returns the number of vias tied.
+"""
+function via_in_pad_ties!(m::Mesh, padrec, viarec)
+    bucket = Dict{Tuple{Int,Int},Vector{Any}}()
+    key(x, y) = (floor(Int, x / 5), floor(Int, y / 5))
+    for rec in values(padrec)
+        isempty(rec.xs) && continue
+        x0, x1 = extrema(rec.xs); y0, y1 = extrema(rec.ys)
+        for bi in key(x0, y0)[1]:key(x1, y1)[1], bj in key(x0, y0)[2]:key(x1, y1)[2]
+            push!(get!(bucket, (bi, bj), Any[]), rec)
+        end
+    end
+    ntied = 0
+    for vr in viarec
+        tied = false
+        for rec in get(bucket, key(vr.x, vr.y), Any[])
+            rec.anchors[1].net == vr.net || continue
+            inpolygon(vr.x, vr.y, rec.xs, rec.ys) || continue
+            for va in vr.anchors, pa in rec.anchors
+                if va.layer == pa.layer && va.node != pa.node
+                    edge!(m, va.node, pa.node, G_TIE, BR_TIE)
+                    tied = true
+                end
+            end
+        end
+        tied && (ntied += 1)
+    end
+    return ntied
+end
+
 """
     build_mesh(board, setup; h, ρ, cu_thickness_um, plating_um, include_caps, log) -> Mesh
 
@@ -218,7 +264,7 @@ function build_mesh(board::BoardData, setup::SimSetup; h::Float64 = 0.0, auto_di
             push!(anc, anchor!(anchors, netcell, g, li, cx, cy, ni))
         end
         isempty(anc) && continue
-        padrec[(ci, pi)] = (cells = cells, anchors = anc, drill = 0.6 * min(p.size_x, p.size_y))
+        padrec[(ci, pi)] = (cells = cells, anchors = anc, drill = 0.6 * min(p.size_x, p.size_y), xs = xs, ys = ys)
     end
 
     viarec = NamedTuple[]
@@ -273,6 +319,35 @@ function build_mesh(board::BoardData, setup::SimSetup; h::Float64 = 0.0, auto_di
             l == a.layer && nodeid[l][i, j] != 0 && edge!(m, a.node, nodeid[l][i, j], G_TIE, BR_TIE)
         end
     end
+
+    # anchors that lost their cell to another net (two vias / pads of different nets in one
+    # cell, typical on coarse grids): connect them to the nearest same-net cell next to them,
+    # through one cell of plane resistance. That is where the real via meets its plane around
+    # the clearance hole. With no same-net copper adjacent (e.g. a via passing through another
+    # net's plane) nothing is connected, which is correct.
+    nrescued = 0
+    for a in anchors
+        a.i == 0 || continue
+        i0, j0 = cell_index(g, a.x, a.y)
+        best, bd = 0, Inf
+        for dj in -1:1, di in -1:1
+            i, j = i0 + di, j0 + dj
+            (inbounds(g, i, j) && netcell[a.layer][i, j] == a.net && nodeid[a.layer][i, j] != 0) || continue
+            d = hypot(g.x0 + (i - 0.5) * hh - a.x, g.y0 + (j - 0.5) * hh - a.y)
+            d < bd && ((bd, best) = (d, Int(nodeid[a.layer][i, j])))
+        end
+        if best != 0 && bd <= 1.5hh
+            edge!(m, a.node, best, σ * tmm[a.layer] * 1e-3, BR_PLANE; layer = a.layer)
+            nrescued += 1
+        end
+    end
+    nrescued > 0 && log(@sprintf("%s %d pad/via anchor(s) joined to adjacent same-net copper", tag, nrescued))
+
+    # via-in-pad: the via is plated into the pad, so join them directly on every layer they
+    # share. On a coarse grid the pad and its via can otherwise end up as separate nodes
+    # (e.g. when a neighbouring pad of another net owns the cell), cutting the pad off.
+    nvip = via_in_pad_ties!(m, padrec, viarec)
+    nvip > 0 && log(@sprintf("%s %d via-in-pad connection(s)", tag, nvip))
 
     # ── barrels (vias and plated pads)
     plate = plating_um / 1000

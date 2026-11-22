@@ -189,6 +189,37 @@ end
     @test r.sinks[1].drop_mV < (Rvia + 2 * RS * 26 / 4 + 0.002) * 1e3
 end
 
+@testset "mesh: vias sharing a coarse cell still reach their planes" begin
+    # A decoupling cap with a via in each pad; on a 3 mm grid both vias fall in one cell.
+    # In1 is a +3V3 plane with a clearance hole around them, B.Cu a GND plane. The GND via
+    # claims the empty In1 cell first; the +3V3 via must still reach the +3V3 plane next to it.
+    M = PFCore.PDNMesh
+    viapad(ref, x, y, a, b) = part(ref, x, y, [pad("1", -0.5, 0, 0.8, 0.9, a), pad("2", 0.5, 0, 0.8, 0.9, b)])
+    comps = [part("U1", 3, 5, [pad("1", 0, -1, 1, 1, "+3V3"), pad("2", 0, 1.5, 1, 1, "GND")]),
+             part("U2", 27, 5, [pad("1", 0, -1, 1, 1, "+3V3"), pad("2", 0, 1.5, 1, 1, "GND")]),
+             viapad("C1", 15, 5, "+3V3", "GND")]
+    v(x, y, net) = BP.Via(BP.Point(x, y), 0.6, 0.3, ["F.Cu", "B.Cu"], net)
+    vias = [v(15.5, 5, "GND"), v(14.5, 5, "+3V3"), v(3, 4, "+3V3"), v(3, 6.5, "GND"), v(27, 4, "+3V3"), v(27, 6.5, "GND")]
+    plane3v3 = [rectpts(0, 0, 30, 3), rectpts(0, 5, 30, 11), rectpts(0, 3, 15, 5), rectpts(17, 3, 30, 5)]
+    zs = [BP.Zone("In1.Cu", "+3V3", rectpts(0, 0, 30, 11), plane3v3), zone("B.Cu", "GND", rectpts(0, 0, 30, 11))]
+    b = testboard(comps = comps, zones = zs, vias = vias)
+    s = testsetup(b)
+    push!(s.elements, default_element(:capacitor, comps[3], s))
+    m = M.build_mesh(b, s; h = 3.0, ρ = 1.72e-8, include_caps = true)
+    parent = collect(1:m.nn)
+    root(x) = (while parent[x] != x; parent[x] = parent[parent[x]]; x = parent[x]; end; x)
+    for k in eachindex(m.EA)
+        m.EK[k] in (M.BR_PLANE, M.BR_TRACE, M.BR_BARREL, M.BR_TIE) || continue
+        ra, rb = root(m.EA[k]), root(m.EB[k]); ra != rb && (parent[ra] = rb)
+    end
+    sizes = Dict{Int,Int}()
+    foreach(k -> (r = root(k); sizes[r] = get(sizes, r, 0) + 1), 1:m.ngrid)
+    main(net) = root(argmax(r -> m.nets[m.node_net[r]] == net ? sizes[r] : -1, collect(keys(sizes))))
+    t = only(m.cap_t)
+    @test root(t.ta) == main(t.e.net_pos)
+    @test root(t.tb) == main(t.e.net_neg)
+end
+
 @testset "AC: low frequency matches DC" begin
     b = testboard(comps = strip_parts(), zones = strip_zones())
     s = testsetup(b)
