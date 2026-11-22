@@ -87,14 +87,68 @@ end
 # Matches (net 14 "GND")  |  (net "GND")  |  (net 14)
 const NET_RE = r"\(net\s+(?:(\d+)\s*(?:\"([^\"]*)\")?|\"([^\"]*)\")\s*\)"
 
-# Tokens that start a new top-level item in a .kicad_pcb (used to end a block)
-const TOP_LEVEL = "(?:segment|via|arc|zone|gr_[a-z]+|footprint|module|dimension|group|target|generated)"
+"""
+    child_items(s) -> [(name, first, last)]
 
-"Return the text of every top-level `(kind ...)` item."
-function top_blocks(content::String, kind::AbstractString)
-    re = Regex("\\(" * kind * "\\b.*?(?=\\(" * TOP_LEVEL * "\\b|\\z)", "s")
-    return [m.match for m in eachmatch(re, content)]
+The direct children of the outermost `( … )` in `s`: their keyword and byte range.
+A single pass that tracks parenthesis depth and skips quoted strings, so it works on
+boards of any size (regex scanning hits PCRE's match limit on big zone fills).
+"""
+function child_items(s::AbstractString)
+    cu = codeunits(s)
+    n = length(cu)
+    out = Tuple{String,Int,Int}[]
+    depth = 0
+    start = 0
+    inq = false
+    i = 1
+    @inbounds while i <= n
+        c = cu[i]
+        if inq
+            if c == UInt8('\\')
+                i += 1                                   # skip the escaped character
+            elseif c == UInt8('"')
+                inq = false
+            end
+        elseif c == UInt8('"')
+            inq = true
+        elseif c == UInt8('(')
+            depth += 1
+            depth == 2 && (start = i)
+        elseif c == UInt8(')')
+            if depth == 2
+                j = start + 1                            # keyword right after '('
+                while j <= i && !(cu[j] in (UInt8(' '), UInt8('\t'), UInt8('\n'), UInt8('\r'), UInt8('('), UInt8(')')))
+                    j += 1
+                end
+                push!(out, (String(cu[start+1:j-1]), start, i))
+            end
+            depth -= 1
+        end
+        i += 1
+    end
+    return out
 end
+
+const _TOP_CACHE = Ref{Any}(nothing)                     # (content, items) of the last board
+
+"Return the text of every top-level item whose keyword matches the regex alternation `kind`."
+function top_blocks(content::String, kind::AbstractString)
+    cache = _TOP_CACHE[]
+    items = if cache !== nothing && cache[1] === content
+        cache[2]
+    else
+        it = child_items(content)
+        _TOP_CACHE[] = (content, it)
+        it
+    end
+    re = Regex("^(?:" * kind * ")\$")
+    return [SubString(content, a, b) for (name, a, b) in items if occursin(re, name)]
+end
+
+"Direct child items of a block with the given keyword (e.g. the pads of a footprint)."
+child_blocks(blk::AbstractString, kind::AbstractString) =
+    [SubString(blk, a, b) for (name, a, b) in child_items(blk) if name == kind]
 
 function xy_of(blk::AbstractString, key::AbstractString)
     m = match(Regex("\\(" * key * "\\s+([-\\d.]+)\\s+([-\\d.]+)"), blk)
@@ -183,10 +237,10 @@ end
 
 function parse_components(content::String, idmap::Dict{Int,String})
     components = Component[]
-    fp_re = r"\((?:footprint|module)\s+\"([^\"]+)\"(.*?)\)(?=\s*\((?:footprint|module|gr_|segment|via|arc|zone|dimension|target)|$)"s
-    for fp_match in eachmatch(fp_re, content)
-        fp_name = fp_match.captures[1]
-        fp_body = fp_match.captures[2]
+    for fp_body in top_blocks(content, "footprint|module")
+        hm = match(r"^\((?:footprint|module)\s+\"?([^\"\s)]+)", fp_body)
+        hm === nothing && continue
+        fp_name = hm.captures[1]
 
         ref_m = match(r"\(fp_text\s+reference\s+\"([^\"]+)\"", fp_body)
         if ref_m === nothing
@@ -208,8 +262,9 @@ function parse_components(content::String, idmap::Dict{Int,String})
         layer = layer_m !== nothing ? string(layer_m.captures[1]) : "UNKNOWN"
 
         pads = Pad[]
-        for pm in eachmatch(r"\(pad\s+\"([^\"]*)\"\s+([a-zA-Z_]+)\s+([a-zA-Z_]+)(.*?)(?=\(pad\s|\z)"s, fp_body)
-            pad_body = pm.captures[4]
+        for pad_body in child_blocks(fp_body, "pad")
+            pm = match(r"^\(pad\s+\"?([^\"\s]*)\"?\s+([a-zA-Z_]+)\s+([a-zA-Z_]+)", pad_body)
+            pm === nothing && continue
 
             at = match(r"\(at\s+([-\d.]+)\s+([-\d.]+)(?:\s+([-\d.]+))?\)", pad_body)
             px = at !== nothing ? parse(Float64, at.captures[1]) : 0.0
