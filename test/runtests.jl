@@ -58,6 +58,27 @@ end
     @test guess_netclass("Net-(C13-Pad1)") == :unspecified
     @test guess_netclass("HSE_IN") == :unspecified
     @test guess_netclass("USB_D+") == :unspecified
+    @test guess_netclass("/Microprocessor/VDDA") == :power         # hierarchical sheet names
+    @test guess_netclass("/USB_5V") == :power
+    @test guess_netclass("/Power/GND") == :ground
+    @test guess_netclass("/SEL_52a1") == :unspecified
+end
+
+@testset "s-expression scanner" begin
+    # quoted strings may contain parentheses; escaped quotes must not end a string
+    src = """(kicad_pcb (version 1) (footprint "Lib:A(1)" (property "Value" "x)y\\"z") (pad "1" smd rect (at 1 2) (size 1 1) (layers "F.Cu") (net 1 "GND")))
+ (zone (net 1) (net_name "GND") (layer "F.Cu") (filled_polygon (layer "F.Cu") (pts (xy 0 0) (xy 1 0) (xy 1 1))))
+ (segment (start 0 0) (end 1 0) (width 0.2) (layer "F.Cu") (net 1)))"""
+    items = BoardParser.child_items(src)
+    @test [i[1] for i in items] == ["version", "footprint", "zone", "segment"]
+    @test length(BoardParser.top_blocks(src, "zone")) == 1
+    fp = only(BoardParser.top_blocks(src, "footprint"))
+    @test length(BoardParser.child_blocks(fp, "pad")) == 1
+    # a very large zone fill (this used to exceed PCRE's match limit)
+    big = "(kicad_pcb (zone (net 1) (layer \"F.Cu\") (filled_polygon (layer \"F.Cu\") (pts " *
+          join(("(xy $(i % 97) $(i % 89))" for i in 1:400_000), " ") * "))) (segment (start 0 0) (end 1 1)))"
+    @test length(BoardParser.top_blocks(big, "zone")) == 1
+    @test length(BoardParser.top_blocks(big, "segment")) == 1
 end
 
 # ─────────────────────────────────────────────────────────────────────────────

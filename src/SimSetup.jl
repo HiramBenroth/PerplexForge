@@ -23,11 +23,13 @@ const CLASS_TAGS   = Dict(:power => "PWR", :ground => "GND", :digital => "DIG", 
 "Best guess of a net's PI role from its name (the user can override it)."
 function guess_netclass(name::AbstractString)
     n = uppercase(strip(name))
+    n = String(last(split(n, '/')))                      # hierarchical sheets: "/Power/VDDA" → "VDDA"
     occursin(r"^(A|D|P|S|SH|CH)?GND|^VSS|^GROUND|^EARTH$|^0V$", n) && return :ground
     occursin(r"^\+", n) && return :power
     occursin(r"^-\d", n) && return :power
     occursin(r"^(VCC|VDD|VBUS|VBAT|VSYS|VIN|VREF|AVDD|DVDD|VDDA|VDDIO|PWR|VPP)", n) && return :power
     occursin(r"^\d+(\.\d+)?V\d*[A-Z]?$|^V\d+V?\d*$", n) && return :power
+    occursin(r"_\d+V\d*$|_\d+V\d*_", n) && return :power      # USB_5V, MAIN_3V3, …
     return :unspecified
 end
 
