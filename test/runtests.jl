@@ -15,6 +15,7 @@ include(joinpath(@__DIR__, "..", "src", "DCSolver.jl"))
 include(joinpath(@__DIR__, "..", "src", "ACSolver.jl"))
 include(joinpath(@__DIR__, "..", "src", "XSection.jl"))
 include(joinpath(@__DIR__, "..", "src", "SISolver.jl"))
+include(joinpath(@__DIR__, "..", "src", "Report.jl"))
 end
 using .PFCore.BoardParser
 using .PFCore.SimSetups
@@ -22,6 +23,7 @@ using .PFCore.DCSolver
 using .PFCore.ACSolver
 using .PFCore.XSection
 using .PFCore.SISolver
+using .PFCore.Report
 
 @testset "parse_si / format_si" begin
     @test parse_si("10k") ≈ 1e4
@@ -435,6 +437,34 @@ end
     b0 = BP.BoardData(b.width, b.height, b.nets, b.components, b.traces, b.vias, b.zones, b.outline, BP.StackupLayer[])
     r0 = solve_si(b0, new_setup("x.kicad_pcb", b0))
     @test r0.ok && !r0.stack.defined && any(m -> occursin("nominal 1.6 mm", m), r0.messages)
+end
+
+@testset "HTML report" begin
+    @test Report.base64(UInt8[]) == "" && Report.base64(codeunits("f")) == "Zg==" &&
+          Report.base64(codeunits("fo")) == "Zm8=" && Report.base64(codeunits("foobar")) == "Zm9vYmFy"
+    b = testboard(comps = strip_parts(), zones = strip_zones())
+    s = testsetup(b)
+    s.ac["points_per_decade"] = 3
+    dc, ac = solve_dc(b, s), solve_ac(b, s)
+    bs = si_board()
+    ss = new_setup("si.kicad_pcb", bs)
+    si = solve_si(bs, ss)
+    dir = mktempdir()
+    png = joinpath(dir, "x.png")
+    write(png, UInt8[0x89, 0x50, 0x4e, 0x47])                       # contents don't matter, it is embedded as-is
+    path = write_report(joinpath(dir, "r.html"); board = b, setup = s, dc, ac, si, version = "v9",
+                        images = [(:dc, "Voltage <map>", png), (:si, "SI", png)])
+    html = read(path, String)
+    @test startswith(html, "<!doctype html>") && occursin("</html>", html)
+    for want in ("DC analysis", "AC analysis", "<svg", "Signal integrity", "Differential pairs", "Impedance table",
+                 "Stackup", "data:image/png;base64,iVBORw==", "Voltage &lt;map&gt;", "SNK1", "USB")
+        @test occursin(want, html)
+    end
+    @test count("<figure>", html) == 2
+    # without results it still writes a page that says so
+    empty_html = read(write_report(joinpath(dir, "e.html"); board = b, setup = s), String)
+    @test occursin("Run an analysis first", empty_html) && !occursin("DC analysis", empty_html)
+    @test report_path("/a/b/board.kicad_pcb") == "/a/b/board.perplex-report.html"
 end
 
 # ─────────────────────────────────────────────────────────────────────────────

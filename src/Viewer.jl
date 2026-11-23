@@ -16,6 +16,9 @@ using ..DCSolver
 using ..ACSolver
 using ..ResultsPanel
 using ..ImpedancePanel
+using ..SISolver
+using ..SIPanel
+using ..Report
 using Printf
 
 const DISPLAY_OPTS = ((:traces, "Traces",       ["Solid", "Wireframe", "Off"]),
@@ -74,13 +77,18 @@ Commands:
   element rm <id>   |   element list
   check                                   validate the DC setup only
   dc  (or run)                            run the DC IR-drop analysis (same as the ▶ button)
-  overlay <voltage|drop|density|off>      colour the copper by the last DC result
+  overlay <voltage|drop|density|z|target|ref|off>   colour the copper by the last DC / SI result
   rail <net>                              rail shown by the voltage overlay
   ac                                      run the AC PDN-impedance sweep (each sink is a port)
+  si                                      run the signal-integrity analysis (impedance, return paths, lengths)
+  target [<pattern> <Ω> [tol%] [diff]]    list / add an impedance target   ·   target rm <pattern> | reset
+  group [add <name> <tol> <pattern…> [delay] | rm <name>]   length-match groups (tol in mm, or ps with delay)
+  siset <key> <value>                     SI settings, e.g. siset return_via_mm 1   ·   pairs   ·   issues [all]
   acset <f_start|f_stop|points_per_decade|cell_mm> <value>   e.g. acset f_stop 2G
   freq <Hz>   |   port <id>               3D map of |V| at a frequency for 1 A into a port
   dcset <cell_mm|temperature_c|via_plating_um|cu_thickness_um> <value>
   save                                    write <board>.perplex.json
+  report [open]                           write <board>.perplex-report.html (DC, AC and SI results; prints to PDF)
   recover                                 load unsaved changes from the last session
   show|hide <layer|outline|dielectric>    mode <traces|pads|vias|pours|bodies> <solid|translucent|wire|off>
   colorby <layer|class>                   zscale <1-20>
@@ -121,7 +129,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
                  Observable(clamp(getv("zscale", 1.0), 1.0, MAX_ZSCALE)),
                  String[], Set{Symbol}(), say,
                  Observable{Any}(nothing), Observable(getv("result_mode", "Voltage")), Observable(getv("result_net", "")), 0,
-                 Observable{Any}(nothing), Observable(0.0), Observable(1), 0)
+                 Observable{Any}(nothing), Observable(0.0), Observable(1), 0,
+                 Observable{Any}(nothing), 0, Observable(0))
 
     fig = with_theme(merge(WORKBENCH_THEME, theme_dark())) do
         Figure(size = (1900, 1050), backgroundcolor = RGBf(0.11, 0.11, 0.13))
@@ -142,10 +151,13 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
                        labelcolor = :white, padding = (14, 14, 7, 7))
     btn_ac = Button(top[1, 5]; label = "▶  Run AC sweep", buttoncolor = RGBf(0.15, 0.35, 0.60),
                     labelcolor = :white, padding = (14, 14, 7, 7))
-    btn_save = Button(top[1, 6]; label = "Save", padding = (16, 16, 7, 7))
-    vbtn = Dict(k => Button(top[1, 6 + i]; label = l, padding = (11, 11, 7, 7))
+    btn_si = Button(top[1, 6]; label = "▶  Run SI analysis", buttoncolor = SI_RUN_COLOR,
+                    labelcolor = :white, padding = (14, 14, 7, 7))
+    btn_save = Button(top[1, 7]; label = "Save", padding = (16, 16, 7, 7))
+    btn_report = Button(top[1, 8]; label = "Report", padding = (14, 14, 7, 7))
+    vbtn = Dict(k => Button(top[1, 8 + i]; label = l, padding = (11, 11, 7, 7))
                 for (i, (k, l)) in enumerate(((:keep, "Fit"), (:top, "Top"), (:iso, "Iso"), (:side, "Side"), (:bottom, "Bottom"))))
-    status = Label(top[1, 12], "Ready"; halign = :left, color = :gray70, width = 420, fontsize = 13)
+    status = Label(top[1, 14], "Ready"; halign = :left, color = :gray70, width = 420, fontsize = 13)
     colgap!(top, 8)
     update_title() = (title.text[] = rich("PerplexForge ", rich(version; color = :gray60, fontsize = 13, font = :regular),
                                           "  ·  " * boardname * (st.setup.dirty ? "   ●  unsaved" : "")))
@@ -166,8 +178,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     # centre: bottom area first (so warnings from the scene builder land in the console), then 3D
     bottom = GridLayout(center[3, 1])
     tabgl = GridLayout(bottom[1, 1]; halign = :left, tellwidth = false)
-    tabs_b = TabBar(tabgl, [:console => "Console", :impedance => "Impedance"])
-    colsize!(tabgl, 1, Fixed(120)); colsize!(tabgl, 2, Fixed(120))
+    tabs_b = TabBar(tabgl, [:console => "Console", :impedance => "PDN impedance", :signals => "Signals"])
+    foreach(c -> colsize!(tabgl, c, Fixed(c == 2 ? 140 : 120)), 1:3)
     console = ListPanel(bottom[2, 1]; autoscroll = true, selectable = false, rowpx = 16, fontsize = 12)
     zpanel = DynPanel(GridLayout(bottom[2, 1]; tellwidth = false, tellheight = false))
     rowgap!(bottom, 4)
@@ -325,7 +337,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     end
 
     # ── right dock: inspector / view ─────────────────────────────────────────
-    tabs_r = TabBar(GridLayout(right[1, 1]), [:inspector => "Inspector", :results => "Results", :view => "View"])
+    tabs_r = TabBar(GridLayout(right[1, 1]), [:inspector => "Inspector", :results => "Power", :signals => "Signals",
+                                              :view => "View"])
     rpanel = DynPanel(GridLayout(right[2, 1]; valign = :top, tellheight = false))
     rowgap!(right, 8)
 
@@ -399,12 +412,15 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         isempty(st.pending) && return
         tab = tabs_r.active[]
         want = (:right in st.pending) || (tab in st.pending)
-        bottom_want = :impedance in st.pending
+        bottom_want = :impedance in st.pending || :si_table in st.pending
         empty!(st.pending)
         if bottom_want
             if tabs_b.active[] == :impedance
                 GLMakie.Makie.hide!(console.ax)
                 rebuild!(p -> build_impedance_panel!(p, st; run! = () -> run_ac!()), zpanel)
+            elseif tabs_b.active[] == :signals
+                GLMakie.Makie.hide!(console.ax)
+                rebuild!(p -> build_si_table!(p, st; run! = () -> run_si!()), zpanel)
             else
                 rebuild!(_ -> nothing, zpanel)
                 GLMakie.Makie.unhide!(console.ax)
@@ -414,6 +430,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         rebuild!(rpanel) do p
             tab == :inspector ? build_inspector!(p, st) :
             tab == :results   ? build_results_panel!(p, st; run! = () -> run_dc!(), run_ac! = () -> run_ac!()) :
+            tab == :signals   ? build_si_panel!(p, st; run! = () -> run_si!()) :
                                 build_view_panel!(p)
         end
     end
@@ -432,6 +449,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         update_title()
         refresh_browser!(true)
         request!(st, :results)                     # "setup changed since this run" note
+        request!(st, :signals)
     end
     on(st.result) do _
         request!(st, :results)
@@ -439,6 +457,15 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     on(st.ac_result) do _
         request!(st, :results)
         request!(st, :impedance)
+    end
+    on(st.result_mode) do _
+        request!(st, :signals)
+        request!(st, :results)
+    end
+    on(st.si_result) do _
+        request!(st, :signals)
+        request!(st, :si_table)
+        request!(st, :inspector)
     end
     on(tabs_b.active) do _
         request!(st, :impedance)
@@ -607,12 +634,115 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
             st.ac_port[] = clamp(st.ac_port[], 1, max(1, length(res.ports)))
             bad = [p for p in res.ports if !isempty(target_violations(res.freqs, p.Z, p.target))]
             status.text[] = isempty(bad) ? "AC: all ports meet their target impedance" :
-                            "AC: $(length(bad)) port(s) above target (see Impedance tab)"
+                            "AC: $(length(bad)) port(s) above target (see the PDN impedance tab)"
         else
             status.text[] = "AC sweep failed (see console)"
         end
     end
     on(btn_ac.clicks) do _; run_ac!(); end
+
+    function run_si!()
+        say("[si] Analysing signal integrity (impedance, return paths, lengths)…")
+        res = try
+            solve_si(board, st.setup; log = say)
+        catch err
+            say("[si] ERROR: " * sprint(showerror, err))
+            status.text[] = "SI analysis failed (see console)"
+            return
+        end
+        foreach(l -> say("[si] " * l), res.messages)
+        foreach(l -> say("[si] " * l), si_summary_lines(res))
+        st.si_rev = st.rev[]
+        st.si_issue[] = 0
+        st.si_result[] = res
+        if res.ok
+            is_si_mode(st.result_mode[]) || (st.result_mode[] = "SI vs target")
+            tabs_r.active[] = :signals
+            tabs_b.active[] = :signals
+            ne = count(i -> i.severity == :error, res.issues)
+            nw = count(i -> i.severity == :warning, res.issues)
+            bad = count(p -> !(p.z_ok && p.skew_ok), res.pairs)
+            status.text[] = "SI: $ne error(s), $nw warning(s)" * (isempty(res.pairs) ? "" : " · $bad of $(length(res.pairs)) pair(s) off spec")
+        else
+            status.text[] = "SI analysis failed (see console)"
+        end
+    end
+    on(btn_si.clicks) do _; run_si!(); end
+
+    # ── report ───────────────────────────────────────────────────────────────
+    screen_ref = Ref{Any}(nothing)
+    "PNG of the 3D view only (cropped from the rendered window)."
+    function capture_3d(path)
+        flush_ui!()
+        img = screen_ref[] === nothing ? GLMakie.Makie.colorbuffer(fig) : GLMakie.Makie.colorbuffer(screen_ref[])
+        fw = widths(fig.scene.viewport[])[1]
+        sc = size(img, 2) / fw
+        vp = bs.scene.viewport[]
+        x0, y0 = round.(Int, GLMakie.Makie.GeometryBasics.origin(vp) .* sc)
+        w, h = round.(Int, widths(vp) .* sc)
+        H = size(img, 1)
+        img = img[clamp(H - (y0 + h) + 1, 1, H):clamp(H - y0, 1, H), clamp(x0 + 1, 1, size(img, 2)):clamp(x0 + w, 1, size(img, 2))]
+        # trim the empty background around the board (keep a margin)
+        bg = img[1, 1]
+        diff(c) = abs(Float32(c.r) - Float32(bg.r)) + abs(Float32(c.g) - Float32(bg.g)) + abs(Float32(c.b) - Float32(bg.b)) > 0.06f0
+        rows = findall(i -> any(diff, @view img[i, :]), axes(img, 1))
+        cols = findall(j -> any(diff, @view img[:, j]), axes(img, 2))
+        if !isempty(rows) && !isempty(cols)
+            m = round(Int, 0.03 * max(length(rows), length(cols)))
+            img = img[max(1, rows[1] - m):min(end, rows[end] + m), max(1, cols[1] - m):min(end, cols[end] + m)]
+        end
+        save(path, img)
+        return path
+    end
+    function run_report!(; open_it::Bool = true)
+        dc = st.result[]; ac = st.ac_result[]; si = st.si_result[]
+        any(r -> r !== nothing && r.ok, (dc, ac, si)) || (say("[report] Run at least one analysis first (DC, AC or SI)."); return nothing)
+        say("[report] Writing the report…")
+        prev_mode, prev_view = st.result_mode[], bs.view[]
+        images = Tuple{Symbol,String,String}[]
+        dir = mktempdir()
+        try
+            set_view!(bs, :top)
+            shots = Tuple{Symbol,String,String}[]
+            if dc !== nothing && dc.ok
+                push!(shots, (:dc, "Voltage", "DC voltage on $(shown_rail(st, dc)) (top view, all layers)"),
+                             (:dc, "IR drop", "IR drop (mV) on the simulated nets"))
+            end
+            if si !== nothing && si.ok
+                push!(shots, (:si, "SI vs target", "Signal traces against their impedance targets (green ok, red outside, grey no target, magenta no reference); ◆ findings"),
+                             (:si, "SI impedance", "Signal trace impedance (Zdiff where pairs run coupled), turbo scale $(join(round.(Int, si_overlay_range(si)), "–")) Ω"))
+            end
+            for (k, (sec, mode, cap)) in enumerate(shots)
+                st.result_mode[] = mode
+                push!(images, (sec, cap, capture_3d(joinpath(dir, "shot$k.png"))))
+            end
+        catch err
+            say("[report] could not capture the 3D view: " * sprint(showerror, err))
+        finally
+            st.result_mode[] = prev_mode
+            set_view!(bs, prev_view)
+        end
+        path = report_path(setup.board_file)
+        try
+            write_report(path; board, setup = st.setup, dc, ac, si, images, version, logo = asset_path("icons", "icon_64.png"))
+        catch err
+            say("[report] ERROR: " * sprint(showerror, err))
+            status.text[] = "Report failed (see console)"
+            return nothing
+        end
+        say("[report] Wrote $path")
+        status.text[] = "Report: $(basename(path))"
+        if open_it
+            try
+                cmd = Sys.iswindows() ? `cmd /c start "" $path` : Sys.isapple() ? `open $path` : `xdg-open $path`
+                run(pipeline(cmd; stdout = devnull, stderr = devnull); wait = false)
+            catch err
+                say("[report] Open it in a browser: $path")
+            end
+        end
+        return path
+    end
+    on(btn_report.clicks) do _; run_report!(); end
 
     # ── console commands ─────────────────────────────────────────────────────
     function find_net(q)
@@ -691,6 +821,67 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
             "  ($k changed)")
     end
 
+    function target_cmd(rest)
+        ts = si_targets(st.setup)
+        if isempty(rest)
+            isempty(ts) && return say("No impedance targets (impedances are reported but not checked).")
+            foreach(t -> say(@sprintf("  %-20s %-6s %g Ω ±%s%%", t.pattern, t.mode == :diff ? "diff" : "single", t.z,
+                                      isnan(t.tol_pct) ? "default" : string(t.tol_pct))), ts)
+            return
+        end
+        sub = lowercase(rest[1])
+        if sub == "reset"
+            delete!(st.setup.si, "targets"); changed!(st)
+            return say("[si] targets reset to the defaults (USB pairs 90 Ω differential)")
+        elseif sub == "rm" && length(rest) >= 2
+            keep = [t for t in ts if t.pattern != rest[2]]
+            length(keep) == length(ts) && return say("No target '$(rest[2])'.")
+            set_si_targets!(st.setup, keep); changed!(st)
+            return say("[si] removed target $(rest[2])")
+        end
+        length(rest) < 2 && return say("Usage: target <pattern> <Ω> [tol%] [diff]   e.g. target *CLK* 50 10")
+        z = parse_si(String(rest[2]))
+        (z === nothing || z <= 0) && return say("Impedance must be a positive number of ohms.")
+        tol = NaN
+        mode = :se
+        for a in rest[3:end]
+            la = lowercase(a)
+            la in ("diff", "differential", "pair") ? (mode = :diff) :
+            la in ("se", "single") ? (mode = :se) :
+            (x = tryparse(Float64, rstrip(la, '%')); x === nothing ? say("Ignored '$a'.") : (tol = x))
+        end
+        set_si_targets!(st.setup, vcat(filter(t -> !(t.pattern == rest[1] && t.mode == mode), ts),
+                                       [ZTarget(String(rest[1]), z, tol, mode)]))
+        changed!(st)
+        say("[si] target $(rest[1]) $(mode == :diff ? "differential" : "single-ended") $(z) Ω" *
+            (isnan(tol) ? "" : " ±$(tol)%") * " (run again to apply)")
+    end
+    function group_cmd(rest)
+        gs = si_groups(st.setup)
+        if isempty(rest)
+            isempty(gs) && return say("No length-match groups. Usage: group add <name> <tol> <pattern…> [delay]")
+            foreach(g -> say("  $(rpad(g.name, 14)) ≤ $(g.tol) $(g.by == :delay ? "ps" : "mm")   $(join(g.patterns, " "))"), gs)
+            return
+        end
+        sub = lowercase(rest[1])
+        if sub == "rm" && length(rest) >= 2
+            keep = [g for g in gs if g.name != rest[2]]
+            length(keep) == length(gs) && return say("No group '$(rest[2])'.")
+            set_si_groups!(st.setup, keep); changed!(st)
+            return say("[si] removed group $(rest[2])")
+        elseif sub == "add" && length(rest) >= 4
+            tol = parse_si(String(rest[3]))
+            tol === nothing && return say("Tolerance must be a number (mm, or ps with 'delay').")
+            pats = String[String(a) for a in rest[4:end] if lowercase(a) != "delay"]
+            by = any(a -> lowercase(a) == "delay", rest[4:end]) ? :delay : :length
+            isempty(pats) && return say("Give at least one net pattern, e.g. DQ*.")
+            set_si_groups!(st.setup, vcat(filter(g -> g.name != rest[2], gs), [GroupDef(String(rest[2]), pats, tol, by)]))
+            changed!(st)
+            return say("[si] group $(rest[2]): $(join(pats, " ")) within $tol $(by == :delay ? "ps" : "mm") (run again to apply)")
+        end
+        say("Usage: group add <name> <tol> <pattern…> [delay]   |   group rm <name>   |   group")
+    end
+
     function exec(line)
         line = strip(line)
         isempty(line) && return
@@ -746,6 +937,33 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
                 run_dc!()
             elseif cmd == "ac"
                 run_ac!()
+            elseif cmd == "si"
+                run_si!()
+            elseif cmd == "target" || cmd == "targets"
+                target_cmd(rest)
+            elseif cmd == "group" || cmd == "groups"
+                group_cmd(rest)
+            elseif cmd == "siset"
+                keys_ = [k for (k, _, _, _) in SI_SETTING_SPECS]
+                (length(rest) < 2 || !(rest[1] in keys_)) && return say("Usage: siset <$(join(keys_, "|"))> <value>")
+                x = parse_si(String(rest[2]))
+                (x === nothing || x < 0) && return say("Value must be a number ≥ 0.")
+                st.setup.si[String(rest[1])] = x
+                changed!(st)
+                say("[si] $(rest[1]) = $(format_si(x, "")) (run again to apply)")
+            elseif cmd == "pairs"
+                res = st.si_result[]
+                (res === nothing || !res.ok) && return say("Run the SI analysis first (si).")
+                isempty(res.pairs) && return say("No differential pairs found (pairs are found by name: _P/_N, +/-, DP/DM …).")
+                foreach(p -> say(@sprintf("  %-28s Zdiff %6.1f Ω  skew %.3f mm  %s", p.name, p.zd_avg, p.skew,
+                                          p.z_ok && p.skew_ok ? "ok" : "OFF SPEC")), res.pairs)
+            elseif cmd == "issues"
+                res = st.si_result[]
+                (res === nothing || !res.ok) && return say("Run the SI analysis first (si).")
+                all_ = !isempty(rest) && lowercase(rest[1]) == "all"
+                shown = [i for i in res.issues if all_ || i.severity != :info]
+                foreach(i -> say("  " * rpad(uppercase(string(i.severity)), 8) * i.text), first(shown, 60))
+                say("  ($(length(shown)) shown" * (all_ ? "" : ", 'issues all' includes notes") * ")")
             elseif cmd == "acset"
                 keys_ = [k for (k, _, _, _) in AC_SETTING_SPECS]
                 (length(rest) < 2 || !(rest[1] in keys_)) && return say("Usage: acset <$(join(keys_, "|"))> <value>  (e.g. acset f_stop 2G)")
@@ -775,7 +993,9 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
                 isempty(rest) && return say("overlay = $(st.result_mode[])")
                 a = lowercase(rest[1])
                 st.result_mode[] = a in ("voltage", "v", "volts") ? "Voltage" : a in ("drop", "ir") ? "IR drop" :
-                                   a in ("density", "j", "current") ? "Current density" : "Off"
+                                   a in ("density", "j", "current") ? "Current density" :
+                                   a in ("z", "impedance") ? "SI impedance" : a in ("target", "targets") ? "SI vs target" :
+                                   a in ("ref", "reference") ? "SI reference" : "Off"
                 request!(st, :results)
             elseif cmd == "rail"
                 res = st.result[]
@@ -796,6 +1016,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
                 say("[dc] $(rest[1]) = $x (run again to apply)")
             elseif cmd == "save"
                 do_save!()
+            elseif cmd == "report"
+                run_report!(; open_it = !isempty(rest) && lowercase(rest[1]) == "open")
             elseif cmd == "recover"
                 do_recover!()
             elseif cmd == "show" || cmd == "hide"
@@ -856,12 +1078,13 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     screen = nothing
     if show
         screen = display(GLMakie.Screen(; title = "PerplexForge $version · " * boardname), fig)
+        screen_ref[] = screen
         set_window_icon!(screen)
         set_view!(bs, :iso)
     else
         set_view!(bs, :iso)
     end
-    ui = (; fig, state = st, scene = bs, console, flush! = flush_ui!, check! = run_check!, dc! = run_dc!, ac! = run_ac!,
+    ui = (; fig, state = st, scene = bs, console, flush! = flush_ui!, check! = run_check!, dc! = run_dc!, ac! = run_ac!, si! = run_si!, report! = run_report!,
           tabs_bottom = tabs_b, zpanel, save! = do_save!,
           exec = exec, tabs_left = tabs_l, tabs_right = tabs_r, splitters, screen)
     block && screen !== nothing && wait(screen)

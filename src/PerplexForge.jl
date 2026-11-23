@@ -18,6 +18,8 @@ include("XSection.jl")      # 2-D field solver for trace cross-sections (no GUI)
 using .XSection
 include("SISolver.jl")      # signal-integrity analysis: impedance, return paths, lengths (no GUI)
 using .SISolver
+include("Report.jl")        # HTML report of the DC / AC / SI results (no GUI)
+using .Report
 
 include("Widgets.jl")       # list panel, splitters, tabs, rebuildable panels
 include("State.jl")         # shared observable UI state
@@ -25,6 +27,7 @@ include("Scene3D.jl")       # geometry + 3D scene
 include("Inspector.jl")     # net / component / element inspector
 include("ResultsPanel.jl")  # DC / AC results tab
 include("ImpedancePanel.jl") # |Z(f)| plot tab
+include("SIPanel.jl")       # signal-integrity tab and tables
 include("Viewer.jl")        # the workbench window
 using .Viewer
 

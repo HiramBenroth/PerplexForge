@@ -10,9 +10,10 @@ using ..SimSetups
 using ..WorkbenchState
 using ..DCSolver: DCResult, overlay_range, dc_probe, voltage_map
 using ..ACSolver: ac_map
+using ..SISolver: SIResult, impedance_of, si_overlay_range, piece_status, SI_KIND_LABEL
 
 export LayerData, build_layers, stack_geometry, board_bounds, BoardScene, build_scene!, set_view!,
-       refit_if_untouched!, pick_target, hover_info, layer_color, MAX_ZSCALE
+       refit_if_untouched!, pick_target, hover_info, layer_color, MAX_ZSCALE, SI_STATUS_COLORS, SI_KIND_COLORS
 
 const GB = GLMakie.Makie.GeometryBasics
 const MAX_ZSCALE = 20.0
@@ -35,6 +36,11 @@ const LAYER_COLORS = Dict(
 )
 layer_color(name) = get(LAYER_COLORS, name, RGBf(0.7, 0.7, 0.7))
 const HL_COLOR = RGBf(1.0, 0.95, 0.25)
+
+const SI_STATUS_COLORS = Dict(:ok => RGBf(0.35, 0.85, 0.45), :off => RGBf(0.95, 0.30, 0.30),
+                              :none => RGBf(0.45, 0.48, 0.55), :noref => RGBf(0.95, 0.30, 0.85))
+const SI_KIND_COLORS = Dict(:microstrip => RGBf(0.35, 0.65, 1.0), :stripline => RGBf(0.40, 0.88, 0.55),
+                            :embedded => RGBf(0.98, 0.70, 0.25), :none => RGBf(0.95, 0.30, 0.85))
 
 # ── primitives → convex rings ────────────────────────────────────────────────
 function stadium(a::Point2f, b::Point2f, r; n = 6)
@@ -664,6 +670,7 @@ function build_scene!(pos, st::UIState, layers::Vector{LayerData}, zcu, slabs, b
         mode = st.result_mode[]
         mode == "Off" && return
         mode == AC_MODE && return set_ac_overlay!()
+        is_si_mode(mode) && return set_si_overlay!()
         res = st.result[]
         (res === nothing || !res.ok) && return
         rail = shown_rail(st, res)
@@ -725,7 +732,49 @@ function build_scene!(pos, st::UIState, layers::Vector{LayerData}, zcu, slabs, b
             end
         end
     end
-    onany(set_overlay!, st.result, st.result_mode, st.result_net, st.ac_result, st.ac_freq, st.ac_port)
+    # SI: signal traces coloured by impedance / target check / reference type, and finding markers
+    function set_si_overlay!()
+        res = st.si_result[]
+        (res === nothing || !res.ok) && return
+        mode = st.result_mode[]
+        lo, hi = si_overlay_range(res)
+        zcol(z) = isnan(z) ? rgba(SI_STATUS_COLORS[:noref]) : (c = cmap[clamp((z - lo) / (hi - lo), 0, 1)]; RGBAf(c.r, c.g, c.b, 1))
+        for lname in res.layers
+            haskey(st.layer_on, lname) || continue
+            pts = Point3f[]; cs = RGBAf[]
+            for p in res.pieces
+                p.layer == lname || continue
+                push!(pts, Point3f(p.xa, -p.ya, 0), Point3f(p.xb, -p.yb, 0))
+                c = mode == "SI impedance" ? zcol(impedance_of(p)) :
+                    mode == "SI vs target" ? rgba(SI_STATUS_COLORS[piece_status(p)]) : rgba(SI_KIND_COLORS[p.kind])
+                push!(cs, c, c)
+            end
+            isempty(pts) && continue
+            for side in (1, -1)
+                pl = linesegments!(scene, pts; color = cs, linewidth = 4, visible = st.layer_on[lname])
+                bindz!(pl, zcu[lname], side * 6u)
+                push!(overlay_plots, pl)
+            end
+        end
+        # finding markers (located findings only), the highlighted one ringed
+        sel = st.si_issue[]
+        notes = get(st.setup.view, "si_show_notes", false) == true
+        for (k, iss) in enumerate(res.issues)
+            isempty(iss.spots) && continue
+            iss.severity == :info && !notes && k != sel && continue
+            lname = isempty(iss.layer) ? first(res.layers) : iss.layer
+            haskey(zcu, lname) || continue
+            pts = [Point3f(x, -y, 0) for (x, y) in iss.spots]
+            c = SEVERITY_COLORS[iss.severity]
+            pl = scatter!(scene, pts; color = rgba(c, k == sel ? 1f0 : 0.85f0), markersize = k == sel ? 20 : 11,
+                          marker = :diamond, strokecolor = k == sel ? :white : RGBf(0.1, 0.1, 0.1), strokewidth = k == sel ? 2 : 1,
+                          depth_shift = -0.05f0, visible = st.layer_on[lname])
+            bindz!(pl, zcu[lname], 8u)
+            push!(overlay_plots, pl)
+        end
+    end
+    onany(set_overlay!, st.result, st.result_mode, st.result_net, st.ac_result, st.ac_freq, st.ac_port,
+          st.si_result, st.si_issue)
 
     return BoardScene(ls, scene, cam, pickmap, bbox, raycast, Ref{Any}(nothing), Ref(:iso))
 end
@@ -782,6 +831,27 @@ function hover_info(bs::BoardScene, st::UIState)
         i, j = floor(Int, (h.x - acr.grid.x0) / acr.grid.h) + 1, floor(Int, (h.y - acr.grid.y0) / acr.grid.h) + 1
         if li !== nothing && 1 <= i <= acr.grid.nx && 1 <= j <= acr.grid.ny && !isnan(maps[li][i, j])
             s *= "  ·  |V| " * format_si(maps[li][i, j], "Ω") * " per A at " * format_si(st.ac_freq[], "Hz")
+        end
+        return s
+    end
+    sir = st.si_result[]
+    if is_si_mode(st.result_mode[]) && sir !== nothing && sir.ok
+        best, bd = nothing, Inf
+        for p in sir.pieces
+            (p.net == h.net && p.layer == h.layer) || continue
+            vx, vy = p.xb - p.xa, p.yb - p.ya
+            t = clamp(((h.x - p.xa) * vx + (h.y - p.ya) * vy) / max(vx^2 + vy^2, 1e-12), 0, 1)
+            d = hypot(h.x - p.xa - t * vx, h.y - p.ya - t * vy)
+            d < bd && (best = p; bd = d)
+        end
+        if best !== nothing && bd <= best.w / 2 + 0.05
+            p = best
+            z = isnan(p.Zdiff) ? (isnan(p.Z0) ? "no reference" : "Z0 " * string(round(p.Z0, digits = 1)) * " Ω") :
+                                 "Zdiff " * string(round(p.Zdiff, digits = 1)) * " Ω (gap " * string(round(p.gap, digits = 3)) * ")"
+            s *= "  ·  " * z * "  ·  " * SI_KIND_LABEL[p.kind] * (isempty(p.ref) ? "" : " → " * p.ref) *
+                 (isnan(p.cpw) ? "" : "  ·  coplanar gap " * string(round(p.cpw, digits = 2))) *
+                 "  ·  w " * string(round(p.w, digits = 3)) * "  ·  " * string(round(p.delay * 1e9, digits = 2)) * " ps/mm" *
+                 (isnan(p.target) ? "" : "  ·  target " * string(round(Int, p.target)) * " Ω")
         end
         return s
     end

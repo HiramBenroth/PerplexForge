@@ -24,7 +24,7 @@ using ..XSection
 
 export SISettings, SIResult, SI_SETTING_SPECS, si_settings, solve_si, si_summary_lines, find_diff_pairs,
        ZTarget, GroupDef, si_targets, si_groups, set_si_targets!, set_si_groups!, DEFAULT_TARGETS, si_stack,
-       SIStack, globmatch, impedance_of, si_net_report, SI_KIND_LABEL
+       SIStack, globmatch, impedance_of, si_net_report, SI_KIND_LABEL, si_overlay_range, piece_status
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Settings, targets, groups (stored in setup.si)
@@ -1013,6 +1013,35 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Reporting helpers
 # ─────────────────────────────────────────────────────────────────────────────
+"Colour range (Ω) for the impedance overlay: 2nd–98th percentile of the pieces, by length."
+function si_overlay_range(r::SIResult)
+    zs = [(impedance_of(p), p.len) for p in r.pieces if !isnan(impedance_of(p))]
+    isempty(zs) && return (0.0, 100.0)
+    sort!(zs; by = first)
+    tot = sum(last, zs)
+    function pick(f)
+        acc = 0.0
+        for (z, l) in zs
+            acc += l
+            acc >= f * tot && return z
+        end
+        return zs[end][1]
+    end
+    lo, hi = pick(0.02), pick(0.98)
+    if hi - lo < 5
+        m = (lo + hi) / 2
+        lo, hi = m - 2.5, m + 2.5
+    end
+    return (floor(lo), ceil(hi))
+end
+
+"How a piece fares against its target: :ok, :off (outside the tolerance), :none (no target), :noref."
+function piece_status(p::SIPiece)
+    z = impedance_of(p)
+    isnan(z) && return :noref
+    isnan(p.target) && return :none
+    return abs(z - p.target) / p.target * 100 <= p.tol ? :ok : :off
+end
 fmtz(z) = isnan(z) ? "—" : @sprintf("%.1f Ω", z)
 
 function si_summary_lines(r::SIResult)

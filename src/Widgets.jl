@@ -1,7 +1,7 @@
 module Widgets
 
 export ListPanel, set_items!, log!, Splitter, TabBar, DynPanel, rebuild!, blk!, sub!, obs!,
-       CheckRow, PANEL_BG, ACCENT, BTN_BG, BTN_ACTIVE
+       CheckRow, TablePanel, set_rows!, PANEL_BG, ACCENT, BTN_BG, BTN_ACTIVE
 
 using GLMakie
 const GLB = GLMakie.Makie.GridLayoutBase
@@ -136,6 +136,139 @@ function log!(lp::ListPanel, lines::AbstractString...)
     notify(lp.items)
     lp.autoscroll && (lp.offset[] = max(0, length(lp.items[]) - lp.nrows[]))
     return lp
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TablePanel: scrollable table with fixed-width columns (px), a header row that sorts
+# on click (click again to reverse), per-row text colour, and row selection by id.
+# ─────────────────────────────────────────────────────────────────────────────
+mutable struct TablePanel
+    ax::Axis
+    cols::Vector{Tuple{String,Int,Symbol}}         # (header, width px, :left | :right)
+    rows::Vector{Vector{String}}
+    keys::Vector{Vector{Any}}                      # sort key per cell
+    ids::Vector{Any}
+    colors::Vector{RGBf}
+    order::Observable{Vector{Int}}                 # display order (indices into rows)
+    offset::Observable{Int}
+    nrows::Observable{Int}
+    sortcol::Int
+    sortrev::Bool
+    selected::Observable{Any}                      # id of the selected row (nothing)
+    rowpx::Int
+    observers::Vector{Any}                         # figure-level event handlers (release with `off` / obs!)
+end
+
+function TablePanel(pos, cols; rowpx = 17, fontsize = 12, textcolor = RGBf(0.85, 0.87, 0.90), minrows = 3)
+    ax = Axis(pos; backgroundcolor = PANEL_BG, tellheight = false, tellwidth = false, limits = (0, 1, 0, minrows))
+    hidedecorations!(ax); hidespines!(ax)
+    for k in (:rectanglezoom, :scrollzoom, :dragpan, :limitreset)
+        try deregister_interaction!(ax, k) catch end
+    end
+    tp = TablePanel(ax, cols, Vector{String}[], Vector{Any}[], Any[], RGBf[], Observable(Int[]), Observable(0),
+                    Observable(minrows), 0, false, Observable{Any}(nothing), rowpx, Any[])
+    on(ax.scene.viewport) do vp
+        n = max(minrows, floor(Int, widths(vp)[2] / rowpx))
+        n != tp.nrows[] && (tp.nrows[] = n)
+    end
+    on(tp.nrows; update = true) do n
+        limits!(ax, 0, 1, 0, n)
+    end
+    # column edges in data x (0…1) from pixel widths
+    edges = lift(ax.scene.viewport) do vp
+        w = max(widths(vp)[1], 1)
+        xs = Float32[0.01]
+        for (_, px, _) in cols
+            push!(xs, xs[end] + px / w)
+        end
+        xs
+    end
+    content = lift(tp.order, tp.offset, tp.nrows, edges, tp.selected) do ord, off, n, xs, sel
+        L = Tuple{String,Point2f}[]; Lc = RGBf[]
+        R = Tuple{String,Point2f}[]; Rc = RGBf[]
+        H = Tuple{String,Point2f}[]; Hr = Tuple{String,Point2f}[]
+        selrect = Rect2f(0, -10, 1, 1)
+        for (c, (hd, _, al)) in enumerate(cols)
+            arrow = c == tp.sortcol ? (tp.sortrev ? " ▾" : " ▴") : ""
+            al == :right ? push!(Hr, (hd * arrow, Point2f(xs[c+1] - 0.006, n - 0.5))) : push!(H, (hd * arrow, Point2f(xs[c], n - 0.5)))
+        end
+        for k in 1:min(n - 1, length(ord) - off)
+            i = ord[off + k]
+            y = n - 1 - k + 0.5
+            tp.ids[i] == sel && sel !== nothing && (selrect = Rect2f(0, n - 1 - k, 1, 1))
+            for (c, (_, _, al)) in enumerate(cols)
+                txt = c <= length(tp.rows[i]) ? tp.rows[i][c] : ""
+                if al == :right
+                    push!(R, (txt, Point2f(xs[c+1] - 0.006, y))); push!(Rc, tp.colors[i])
+                else
+                    push!(L, (txt, Point2f(xs[c], y))); push!(Lc, tp.colors[i])
+                end
+            end
+        end
+        for v in (L, R, H, Hr)
+            isempty(v) && push!(v, (" ", Point2f(0, -5)))
+        end
+        isempty(Lc) && push!(Lc, textcolor); isempty(Rc) && push!(Rc, textcolor)
+        length(Lc) < length(L) && append!(Lc, fill(textcolor, length(L) - length(Lc)))
+        length(Rc) < length(R) && append!(Rc, fill(textcolor, length(R) - length(Rc)))
+        (L, Lc, R, Rc, H, Hr, selrect)
+    end
+    poly!(ax, lift(c -> c[7], content); color = RGBAf(0.2, 0.5, 0.95, 0.35))
+    poly!(ax, lift(n -> Rect2f(0, n - 1, 1, 1), tp.nrows); color = RGBf(0.12, 0.12, 0.15))
+    text!(ax, lift(c -> c[1], content); color = lift(c -> c[2], content), align = (:left, :center), fontsize = fontsize)
+    text!(ax, lift(c -> c[3], content); color = lift(c -> c[4], content), align = (:right, :center), fontsize = fontsize)
+    text!(ax, lift(c -> c[5], content); color = :gray70, align = (:left, :center), fontsize = fontsize, font = :bold)
+    text!(ax, lift(c -> c[6], content); color = :gray70, align = (:right, :center), fontsize = fontsize, font = :bold)
+
+    push!(tp.observers, on(events(ax.scene).scroll) do s
+        if is_mouseinside(ax.scene)
+            maxoff = max(0, length(tp.order[]) - (tp.nrows[] - 1))
+            tp.offset[] = clamp(tp.offset[] - 3 * Int(sign(s[2])), 0, maxoff)
+        end
+    end)
+    push!(tp.observers, on(events(ax.scene).mousebutton) do ev
+        (ev.button == Mouse.left && ev.action == Mouse.press && is_mouseinside(ax.scene)) || return
+        mp = mouseposition(ax.scene)
+        n = tp.nrows[]
+        row = n - floor(Int, mp[2])                 # 1 = header
+        if row == 1
+            xs = edges[]
+            c = findlast(x -> x <= mp[1], xs)
+            (c === nothing || c > length(cols)) && return
+            tp.sortrev = tp.sortcol == c ? !tp.sortrev : false
+            tp.sortcol = c
+            resort!(tp)
+        else
+            k = tp.offset[] + row - 1
+            1 <= k <= length(tp.order[]) && (tp.selected[] = tp.ids[tp.order[][k]])
+        end
+    end)
+    return tp
+end
+
+function resort!(tp::TablePanel)
+    idx = collect(1:length(tp.rows))
+    c = tp.sortcol
+    if c > 0
+        key(i) = (k = c <= length(tp.keys[i]) ? tp.keys[i][c] : ""; k isa Real && isnan(k) ? Inf : k)
+        function lt(a, b)
+            ka, kb = key(a), key(b)
+            return (ka isa Real && kb isa Real) ? ka < kb : string(ka) < string(kb)
+        end
+        sort!(idx; lt = lt, rev = tp.sortrev)
+    end
+    tp.order[] = idx
+    return tp
+end
+
+"Replace the table contents. `keys` are the sort keys per cell (defaults to the text)."
+function set_rows!(tp::TablePanel, rows::Vector{Vector{String}}; keys = rows, ids = collect(1:length(rows)),
+                   colors = fill(RGBf(0.85, 0.87, 0.90), length(rows)), keep::Bool = false)
+    tp.rows, tp.keys, tp.ids, tp.colors = rows, keys, ids, colors
+    keep || (tp.offset.val = 0)
+    tp.offset.val = clamp(tp.offset[], 0, max(0, length(rows) - (tp.nrows[] - 1)))
+    resort!(tp)
+    return tp
 end
 
 # ─────────────────────────────────────────────────────────────────────────────

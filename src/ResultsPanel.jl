@@ -1,6 +1,6 @@
 module ResultsPanel
 
-# Right-dock "Results" tab: what is drawn on the copper (overlay + colour bar), DC results,
+# Right-dock "Power" tab: what is drawn on the copper (overlay + colour bar), DC results,
 # AC (PDN impedance) results, and the DC / AC settings.
 
 using GLMakie
@@ -11,9 +11,9 @@ using ..Widgets
 using ..DCSolver
 using ..ACSolver
 
-export build_results_panel!, OVERLAY_MODES
+export build_results_panel!, OVERLAY_MODES, settings_grid!, wrap
 
-const OVERLAY_MODES = ["Off", "Voltage", "IR drop", "Current density", AC_MODE]
+const OVERLAY_MODES = ["Off", "Voltage", "IR drop", "Current density", AC_MODE, SI_MODES...]
 const DIM = RGBf(0.55, 0.55, 0.60)
 const OK_C, WARN_C, BAD_C = RGBf(0.45, 0.85, 0.5), RGBf(0.95, 0.80, 0.30), RGBf(0.95, 0.40, 0.35)
 
@@ -134,8 +134,10 @@ function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!:
         _, (lo, hi) = ac_map(acr, clamp(st.ac_port[], 1, length(acr.ports)), st.ac_freq[])
         cb = ((lo, hi), "|V| per A into $(port.id) at $(format_si(st.ac_freq[], "Hz")) (Ω)",
               vs -> [format_si(v, "") for v in vs])
+    elseif is_si_mode(mode)
+        line!(p, h, r, "Signal-integrity overlay: its colour key is in the Signals tab."; color = DIM, fontsize = 11); r += 1
     elseif mode != "Off"
-        line!(p, h, r, mode == AC_MODE ? "Run the AC sweep, then click a frequency on the Impedance plot." :
+        line!(p, h, r, mode == AC_MODE ? "Run the AC sweep, then click a frequency on the PDN impedance plot." :
                                          "Run the DC analysis to see this."; color = DIM, fontsize = 11); r += 1
     end
     if cb !== nothing
