@@ -27,7 +27,7 @@ function guess_netclass(name::AbstractString)
     occursin(r"^(A|D|P|S|SH|CH)?GND|^VSS|^GROUND|^EARTH$|^0V$", n) && return :ground
     occursin(r"^\+", n) && return :power
     occursin(r"^-\d", n) && return :power
-    occursin(r"^(VCC|VDD|VBUS|VBAT|VSYS|VIN|VREF|AVDD|DVDD|VDDA|VDDIO|PWR|VPP)", n) && return :power
+    occursin(r"^(VCC|VDD|VBUS|VBAT|VSYS|VIN|VREF|AVDD|DVDD|AVCC|DVCC|VDDA|VDDIO|PWR|VPP|VAA|VEE|VCORE|VMAIN)", n) && return :power
     occursin(r"^\d+(\.\d+)?V\d*[A-Z]?$|^V\d+V?\d*$", n) && return :power
     occursin(r"_\d+V\d*$|_\d+V\d*_", n) && return :power      # USB_5V, MAIN_3V3, …
     return :unspecified
@@ -97,6 +97,7 @@ mutable struct SimSetup
     view::Dict{String,Any}         # zscale, color_by, panel sizes, display modes …
     dc::Dict{String,Any}           # DC analysis settings (cell size, temperature, plating …)
     ac::Dict{String,Any}           # AC analysis settings (frequency range, points, cell size)
+    si::Dict{String,Any}           # SI analysis settings, impedance targets, length-match groups
     dirty::Bool
 end
 
@@ -335,7 +336,8 @@ recovery_path(board_file) = splitext(board_file)[1] * ".perplex.recovery.json"
 "A setup with every net auto-classified from its name."
 function new_setup(board_file::AbstractString, board::BoardData)
     nc = Dict(n => guess_netclass(n) for n in board.nets)
-    return SimSetup(String(board_file), nc, Element[], Dict{String,Any}(), Dict{String,Any}(), Dict{String,Any}(), true)
+    return SimSetup(String(board_file), nc, Element[], Dict{String,Any}(), Dict{String,Any}(), Dict{String,Any}(),
+                    Dict{String,Any}(), true)
 end
 
 function to_json_tree(s::SimSetup)
@@ -350,6 +352,7 @@ function to_json_tree(s::SimSetup)
                         for e in s.elements],
             dc_settings = (; (Symbol(k) => s.dc[k] for k in sort!(collect(keys(s.dc))))...),
             ac_settings = (; (Symbol(k) => s.ac[k] for k in sort!(collect(keys(s.ac))))...),
+            si_settings = (; (Symbol(k) => s.si[k] for k in sort!(collect(keys(s.si))))...),
             view = (; (Symbol(k) => s.view[k] for k in sort!(collect(keys(s.view))))...))
 end
 
@@ -403,7 +406,8 @@ function load_setup(board_file::AbstractString, board::BoardData; path::Abstract
     view = haskey(obj, :view) ? plain(obj.view) : Dict{String,Any}()
     dc = haskey(obj, :dc_settings) ? plain(obj.dc_settings) : Dict{String,Any}()
     ac = haskey(obj, :ac_settings) ? plain(obj.ac_settings) : Dict{String,Any}()
-    return SimSetup(String(board_file), nc, els, view, dc, ac, false), :loaded
+    si = haskey(obj, :si_settings) ? plain(obj.si_settings) : Dict{String,Any}()
+    return SimSetup(String(board_file), nc, els, view, dc, ac, si, false), :loaded
 end
 
 end # module

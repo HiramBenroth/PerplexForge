@@ -14,6 +14,10 @@ include("DCSolver.jl")      # DC IR-drop solver (no GUI)
 using .DCSolver
 include("ACSolver.jl")      # AC PDN-impedance solver (no GUI)
 using .ACSolver
+include("XSection.jl")      # 2-D field solver for trace cross-sections (no GUI)
+using .XSection
+include("SISolver.jl")      # signal-integrity analysis: impedance, return paths, lengths (no GUI)
+using .SISolver
 
 include("Widgets.jl")       # list panel, splitters, tabs, rebuildable panels
 include("State.jl")         # shared observable UI state
