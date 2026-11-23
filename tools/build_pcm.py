@@ -29,12 +29,16 @@ import zipfile
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 SKIP_NAMES = {"perplexforge_plugin.log", "__pycache__", "Manifest.toml"}
 
-DESCRIPTION = "Power-integrity workbench for KiCad: DC IR-drop and AC PDN-impedance on your board in 3D (needs Julia)."
-DESCRIPTION_FULL = """PerplexForge opens the current board in a 3D power-integrity workbench.
+DESCRIPTION = "Power & signal integrity for KiCad: IR drop, PDN impedance, trace impedance, return paths and skew, in 3D (needs Julia)."
+DESCRIPTION_FULL = """PerplexForge opens the current board in a 3D power- and signal-integrity workbench.
 
 - Classify nets (power / ground / digital) and model components as lumped elements: VRMs, sinks, R, L, ferrite, 0 ohm, capacitors.
 - DC analysis: voltage, IR drop and current density maps on every copper layer, sink voltages, via currents and copper loss.
 - AC analysis: PDN impedance |Z(f)| at every sink with target-impedance checks, plus 3D maps of the noise voltage at any frequency.
+- Signal integrity: trace impedance and delay from a 2-D field solver on the real stackup (microstrip, stripline, coplanar ground,
+  differential pairs), return-path checks (plane gaps and splits, reference changes without return vias), net lengths,
+  differential-pair skew and length-match groups.
+- One-click HTML report of all results (prints to PDF).
 
 Requirements: KiCad 10 with the KiCad API enabled (Preferences > Plugins), and Julia 1.12 or newer (https://julialang.org/install/).
 The first launch installs PerplexForge's Julia packages, which takes several minutes once.

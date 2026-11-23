@@ -59,6 +59,11 @@ const WORKBENCH_THEME = Theme(
     Label = (color = TXT,),
 )
 
+const ABOUT_TEXT = """PerplexForge: power and signal integrity for KiCad.
+DC IR drop · AC PDN impedance · trace impedance (2-D field solver),
+return paths, lengths and skew · HTML / PDF reports.
+MIT licence · github.com/HiramBenroth/PerplexForge"""
+
 const KIND_ALIASES = Dict("vrm" => :vrm, "sink" => :sink, "load" => :sink, "r" => :resistor, "resistor" => :resistor,
                           "l" => :inductor, "inductor" => :inductor, "fb" => :ferrite, "ferrite" => :ferrite,
                           "short" => :short, "0r" => :short, "jumper" => :short, "c" => :capacitor, "capacitor" => :capacitor)
@@ -68,7 +73,7 @@ const CLASS_ALIASES = Dict("power" => :power, "pwr" => :power, "ground" => :grou
 
 const HELP = """
 Commands:
-  help | clear | info | layers | stackup
+  help | about | clear | info | layers | stackup
   nets [filter]   comps [filter]          list nets / components
   net <name>      comp <ref>              select a net / component
   deselect
@@ -146,7 +151,6 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     logo === nothing || image!(logo_ax, rotr90(logo); interpolate = false)
     tightlimits!(logo_ax)
     title = Label(top[1, 2], ""; fontsize = 19, font = :bold, halign = :left)
-    Label(top[1, 3], ""; tellwidth = false)
     btn_check = Button(top[1, 4]; label = "▶  Run DC analysis", buttoncolor = RGBf(0.13, 0.50, 0.27),
                        labelcolor = :white, padding = (14, 14, 7, 7))
     btn_ac = Button(top[1, 5]; label = "▶  Run AC sweep", buttoncolor = RGBf(0.15, 0.35, 0.60),
@@ -157,7 +161,9 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     btn_report = Button(top[1, 8]; label = "Report", padding = (14, 14, 7, 7))
     vbtn = Dict(k => Button(top[1, 8 + i]; label = l, padding = (11, 11, 7, 7))
                 for (i, (k, l)) in enumerate(((:keep, "Fit"), (:top, "Top"), (:iso, "Iso"), (:side, "Side"), (:bottom, "Bottom"))))
-    status = Label(top[1, 14], "Ready"; halign = :left, color = :gray70, width = 420, fontsize = 13)
+    # the status line takes the flexible space between the title and the buttons, so the bar fits small windows
+    status = Label(top[1, 3], "Ready"; halign = :right, color = :gray70, fontsize = 13, tellwidth = false,
+                   padding = (12, 12, 0, 0))
     colgap!(top, 8)
     update_title() = (title.text[] = rich("PerplexForge ", rich(version; color = :gray60, fontsize = 13, font = :regular),
                                           "  ·  " * boardname * (st.setup.dirty ? "   ●  unsaved" : "")))
@@ -405,6 +411,9 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
             blk!(p, Label(h[r, 1:2], txt; halign = :left, justification = :left, fontsize = 11, color = :gray70,
                           tellwidth = false, font = :regular)); r += 1
         end
+        head!("ABOUT")
+        blk!(p, Label(h[r, 1:2], ABOUT_TEXT * "\nVersion " * version; halign = :left, justification = :left, fontsize = 11,
+                      color = :gray70, tellwidth = false)); r += 1
         rowgap!(h, 5)
     end
 
@@ -894,6 +903,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
                 say(HELP)
             elseif cmd == "clear"
                 set_items!(console, String[])
+            elseif cmd == "about"
+                foreach(l -> say("  " * l), split(ABOUT_TEXT * "\nVersion " * version, '\n'))
             elseif cmd == "info"
                 say("Board $(round(board.width, digits = 1)) × $(round(board.height, digits = 1)) mm | " *
                     "$(length(board.nets)) nets | $(length(board.components)) components | " *
