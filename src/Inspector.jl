@@ -8,6 +8,7 @@ using ..BoardParser: BoardData, Component
 using ..SimSetups
 using ..WorkbenchState
 using ..Widgets
+using ..SISolver: si_net_report
 
 export build_inspector!, draw_symbol!, describe_net
 
@@ -55,6 +56,19 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Net
 # ─────────────────────────────────────────────────────────────────────────────
+"Greedy word wrap at `n` characters (continuation lines indented)."
+function wrapline(s::AbstractString, n::Int)
+    out = String[]; cur = ""
+    for w in split(s, ' ')
+        if !isempty(cur) && length(cur) + 1 + length(w) > n
+            push!(out, cur); cur = "   " * w
+        else
+            cur = isempty(cur) ? String(w) : cur * " " * w
+        end
+    end
+    isempty(cur) || push!(out, cur)
+    return join(out, "\n")
+end
 function net_inspector!(p::DynPanel, st::UIState, net::String)
     h = p.host
     cls = netclass(st.setup, net)
@@ -89,6 +103,19 @@ function net_inspector!(p::DynPanel, st::UIState, net::String)
             k > 0 && changed!(st; classes = true)
             st.say("Set $k net(s) to $(CLASS_LABELS[cls]).")
             request!(st, :inspector)
+        end
+    end
+
+    sir = st.si_result[]
+    if sir !== nothing && sir.ok && cls ∉ (:power, :ground)
+        lines = si_net_report(sir, net)
+        if !isempty(lines)
+            section!(p, h, r, "SIGNAL INTEGRITY"); r += 1
+            note!(p, h, r, join((wrapline(l, 54) for l in lines), "\n"); fontsize = 12); r += 1
+            mine = [i for i in sir.issues if i.net == net]
+            for i in first(mine, 4)
+                note!(p, h, r, wrapline("• " * i.text, 60); color = SEVERITY_COLORS[i.severity], fontsize = 11); r += 1
+            end
         end
     end
 

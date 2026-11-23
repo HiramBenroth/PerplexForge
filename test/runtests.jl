@@ -13,11 +13,17 @@ include(joinpath(@__DIR__, "..", "src", "Geometry.jl"))
 include(joinpath(@__DIR__, "..", "src", "Mesh.jl"))
 include(joinpath(@__DIR__, "..", "src", "DCSolver.jl"))
 include(joinpath(@__DIR__, "..", "src", "ACSolver.jl"))
+include(joinpath(@__DIR__, "..", "src", "XSection.jl"))
+include(joinpath(@__DIR__, "..", "src", "SISolver.jl"))
+include(joinpath(@__DIR__, "..", "src", "Report.jl"))
 end
 using .PFCore.BoardParser
 using .PFCore.SimSetups
 using .PFCore.DCSolver
 using .PFCore.ACSolver
+using .PFCore.XSection
+using .PFCore.SISolver
+using .PFCore.Report
 
 @testset "parse_si / format_si" begin
     @test parse_si("10k") ≈ 1e4
@@ -274,6 +280,191 @@ end
     @test isapprox(fpk, f10; rtol = 0.02)
     @test isapprox(r.cplane, 8.8541878128e-12 * 4.5 * 0.1 * 0.06 / 1.6e-3; rtol = 0.02)
     println("    cavity: f10 analytic $(round(f10 / 1e6, digits = 1)) MHz, peak at $(round(fpk / 1e6, digits = 1)) MHz")
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Signal integrity
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "XSection: field solver vs exact solutions" begin
+    b, εr = 0.4, 4.2
+    for w in (0.1, 0.2, 0.4)                          # zero-thickness centred stripline (Cohn, exact)
+        xs = CrossSection(slabs = [Slab(0, b, εr)], conductors = [Conductor(-w / 2, w / 2, b / 2, b / 2)],
+                          plane_bottom = 0.0, plane_top = b)
+        p = line_params(solve_extrapolated(xs))
+        @test isapprox(p.Z0, cohn_stripline_z0(w, b, εr); rtol = 0.005)
+        @test isapprox(p.εeff, εr; rtol = 1e-6)
+        @test isapprox(p.delay, sqrt(εr) / C0_LIGHT; rtol = 1e-6)
+    end
+    for (w, s) in ((0.1, 0.1), (0.15, 0.2))            # edge-coupled stripline (Cohn, exact)
+        xs = CrossSection(slabs = [Slab(0, b, εr)], plane_bottom = 0.0, plane_top = b,
+                          conductors = [Conductor(-s / 2 - w, -s / 2, b / 2, b / 2), Conductor(s / 2, s / 2 + w, b / 2, b / 2)])
+        q = pair_params(solve_extrapolated(xs))
+        ze, zo = cohn_coupled_stripline(w, s, b, εr)
+        @test isapprox(q.Zodd, zo; rtol = 0.006) && isapprox(q.Zeven, ze; rtol = 0.006)
+        @test q.Zdiff ≈ 2q.Zodd
+    end
+    for (w, h, e) in ((0.3, 0.2, 4.3), (0.15, 0.1, 4.0))   # microstrip (Hammerstad–Jensen, ±0.2 %)
+        xs = CrossSection(slabs = [Slab(0, h, e)], conductors = [Conductor(-w / 2, w / 2, h, h)], plane_bottom = 0.0)
+        p = line_params(solve_extrapolated(xs))
+        z, ee = hammerstad_microstrip(w, h, e)
+        @test isapprox(p.Z0, z; rtol = 0.006) && isapprox(p.εeff, ee; rtol = 0.01)
+    end
+    # grounded coplanar waveguide, tight gap (conformal mapping is accurate there)
+    w, s, h, e = 0.3, 0.15, 0.2, 4.3
+    K(k) = XSection.ellipK(k); kp(x) = sqrt(1 - x^2)
+    k = w / (w + 2s); k3 = tanh(π * w / (4h)) / tanh(π * (w + 2s) / (4h))
+    qq = K(kp(k)) * K(k3) / (K(k) * K(kp(k3)))
+    zc = 60π / sqrt((1 + e * qq) / (1 + qq)) / (K(k) / K(kp(k)) + K(k3) / K(kp(k3)))
+    xs = CrossSection(slabs = [Slab(0, h, e)], conductors = [Conductor(-w / 2, w / 2, h, h)], plane_bottom = 0.0,
+                      grounds = [Conductor(-w / 2 - s - 3, -w / 2 - s, h, h), Conductor(w / 2 + s, w / 2 + s + 3, h, h)])
+    @test isapprox(line_params(solve_extrapolated(xs)).Z0, zc; rtol = 0.01)
+    # solder mask and copper thickness both lower Z0
+    m0 = line_params(solve_extrapolated(CrossSection(slabs = [Slab(0, 0.2, 4.3)], conductors = [Conductor(-0.15, 0.15, 0.2, 0.235)],
+                                                     plane_bottom = 0.0))).Z0
+    m1 = line_params(solve_extrapolated(CrossSection(slabs = [Slab(0, 0.2, 4.3)], conductors = [Conductor(-0.15, 0.15, 0.2, 0.235)],
+                                                     plane_bottom = 0.0, coat_t = 0.015, coat_εr = 3.3, coat_surface = 0.2))).Z0
+    @test m1 < m0 < hammerstad_microstrip(0.3, 0.2, 4.3)[1]
+end
+
+@testset "SI: differential pair names" begin
+    pairs = find_diff_pairs(["USB_P", "USB_N", "D+", "D-", "X+", "MOSFET_P", "/a/DP", "/a/DM", "CLK_T", "CLK_C", "GND"])
+    names = Dict(p => (nm, n) for (nm, p, n) in pairs)
+    @test names["USB_P"] == ("USB", "USB_N")
+    @test names["D+"] == ("D±", "D-")
+    @test names["/a/DP"] == ("/a/DP/DM", "/a/DM")
+    @test names["CLK_T"] == ("CLK", "CLK_C")
+    @test length(pairs) == 4                       # X+ and MOSFET_P have no partner
+    @test globmatch("*USB*", "/conn/USB_D") && globmatch("DP", "/a/DP") && !globmatch("D+", "/b/ID+")
+end
+
+# 4-layer board 40 × 20 mm: F.Cu / In1 (GND, with a slot) / In2 (GND) / B.Cu
+si_stackup() = [BP.StackupLayer("F.Mask", "Top Solder Mask", 0.015, "", 3.3, 0.0),
+                BP.StackupLayer("F.Cu", "copper", 0.035, "", 0.0, 0.0),
+                BP.StackupLayer("dielectric 1", "prepreg", 0.2, "", 4.2, 0.02),
+                BP.StackupLayer("In1.Cu", "copper", 0.035, "", 0.0, 0.0),
+                BP.StackupLayer("dielectric 2", "core", 1.0, "", 4.5, 0.02),
+                BP.StackupLayer("In2.Cu", "copper", 0.035, "", 0.0, 0.0),
+                BP.StackupLayer("dielectric 3", "prepreg", 0.2, "", 4.2, 0.02),
+                BP.StackupLayer("B.Cu", "copper", 0.035, "", 0.0, 0.0),
+                BP.StackupLayer("B.Mask", "Bottom Solder Mask", 0.015, "", 3.3, 0.0)]
+function si_board(; extra_vias = BP.Via[], sig2_end = 35.0)
+    T(x0, y0, x1, y1, w, layer, net) = BP.Trace(BP.Point(x0, y0), BP.Point(x1, y1), w, layer, net)
+    traces = [T(5, 5, 35, 5, 0.3, "F.Cu", "SIG1"),                 # crosses the In1 slot at x = 20…21
+              T(5, 15, sig2_end, 15, 0.3, "F.Cu", "SIG2"),         # over solid In1
+              T(25, 10, 39, 10, 0.3, "F.Cu", "SIG3"),              # runs off the planes (they end at x = 36)
+              T(5, 8, 30, 8, 0.15, "F.Cu", "USB_P"), T(5, 8.3, 30, 8.3, 0.15, "F.Cu", "USB_N"),
+              T(30, 8.3, 31, 8.3, 0.15, "F.Cu", "USB_N"),          # 1 mm longer: skew
+              T(5, 2, 10, 2, 0.3, "F.Cu", "SIG4"), T(10, 2, 20, 2, 0.3, "B.Cu", "SIG4")]
+    in1 = [rectpts(0, 0, 20, 20), rectpts(21, 0, 36, 20), rectpts(20, 12, 21, 20)]
+    zones = [BP.Zone("In1.Cu", "GND", rectpts(0, 0, 36, 20), in1), BP.Zone("In2.Cu", "GND", rectpts(0, 0, 36, 20), [rectpts(0, 0, 36, 20)])]
+    vias = vcat([BP.Via(BP.Point(10, 2), 0.6, 0.3, ["F.Cu", "B.Cu"], "SIG4")], extra_vias)
+    nets = Set(["GND", "SIG1", "SIG2", "SIG3", "SIG4", "USB_P", "USB_N"])
+    BP.BoardData(40.0, 20.0, nets, BP.Component[], traces, vias, zones, [vcat(rectpts(0, 0, 40, 20), [BP.Point(0, 0)])], si_stackup())
+end
+
+@testset "SI: impedance, delay, return paths, skew, groups" begin
+    b = si_board()
+    s = new_setup("si.kicad_pcb", b)
+    @test netclass(s, "GND") == :ground
+    SISolver.set_si_groups!(s, [SISolver.GroupDef("BUS", ["SIG1", "SIG2"], 0.5, :length)])
+    r = solve_si(b, s)
+    @test r.ok
+    # the microstrip over In1: same Z as a hand-built cross-section (35 µm copper under 15 µm mask)
+    hand = line_params(solve_extrapolated(CrossSection(slabs = [Slab(0, 0.2, 4.2)], conductors = [Conductor(-0.15, 0.15, 0.2, 0.235)],
+                                                       plane_bottom = 0.0, coat_t = 0.015, coat_εr = 3.3, coat_surface = 0.2)))
+    sig2 = only(n for n in r.nets if n.net == "SIG2")
+    @test isapprox(sig2.zmin, hand.Z0; rtol = 1e-3) && isapprox(sig2.zmax, hand.Z0; rtol = 1e-3)
+    @test 45 < hand.Z0 < 60
+    @test isapprox(sig2.length, 30.0; rtol = 1e-9)
+    @test isapprox(sig2.delay, 30e-3 * hand.delay; rtol = 1e-3)
+    @test any(p -> p.kind == :microstrip && p.ref == "In1.Cu GND", r.pieces)
+    # over the slot SIG1 references In2 through the core: much higher Z0, and a gap finding
+    sig1 = only(n for n in r.nets if n.net == "SIG1")
+    @test sig1.zmax > 1.5 * hand.Z0
+    gi = [i for i in r.issues if i.kind == :gap && i.net == "SIG1"]
+    @test length(gi) == 1 && 19.5 < gi[1].x < 21.5 && occursin("In1.Cu GND", gi[1].text)
+    @test !any(i -> i.net == "SIG2" && i.kind in (:gap, :noref, :split), r.issues)
+    # SIG3 leaves the planes: no reference for the last 3 mm
+    ni = only(i for i in r.issues if i.kind == :noref && i.net == "SIG3")
+    @test ni.x > 36 && occursin("(3.0 mm)", ni.text) && ni.severity == :info     # not a high-speed net
+    @test count(i -> i.kind == :noref, r.issues) == 1
+    # USB pair: 90 Ω default target, coupled ~96 %, 1 mm skew
+    up = only(r.pairs)
+    @test up.name == "USB" && up.target == 90.0
+    handp = pair_params(solve_extrapolated(CrossSection(slabs = [Slab(0, 0.2, 4.2)], plane_bottom = 0.0,
+                                                        conductors = [Conductor(-0.225, -0.075, 0.2, 0.235), Conductor(0.075, 0.225, 0.2, 0.235)],
+                                                        coat_t = 0.015, coat_εr = 3.3, coat_surface = 0.2)))
+    @test isapprox(up.zd_min, handp.Zdiff; rtol = 2e-3)        # over solid plane (the slot raises it)
+    @test up.zd_max > 1.1 * up.zd_min && !up.z_ok
+    @test isapprox(up.skew, 1.0; atol = 1e-6) && !up.skew_ok
+    @test 0.9 < up.coupled < 1.0
+    @test any(i -> i.kind == :skew, r.issues)
+    # SIG4 changes from In1 to In2 (both GND) with no return via; adding one 0.8 mm away fixes it
+    ri = only(i for i in r.issues if i.kind in (:return_via, :stitch_cap) && i.net == "SIG4")
+    @test ri.kind == :return_via && occursin("no GND via", ri.text)
+    r2 = solve_si(si_board(extra_vias = [BP.Via(BP.Point(10.8, 2), 0.6, 0.3, ["F.Cu", "B.Cu"], "GND")]), s)
+    @test !any(i -> i.kind == :return_via, r2.issues)
+    sig4 = only(n for n in r.nets if n.net == "SIG4")
+    @test sig4.nvias == 1 && isapprox(sig4.via_len, 0.2 + 1.0 + 0.2 + 3 * 0.035; rtol = 1e-6)
+    # length group: SIG1 and SIG2 are both 30 mm; shortening SIG2 by 1 mm breaks the 0.5 mm budget
+    g = only(r.groups)
+    @test g.ok && g.spread < 1e-9
+    r3 = solve_si(si_board(sig2_end = 34.0), s)
+    @test !only(r3.groups).ok && any(i -> i.kind == :group, r3.issues)
+    # impedance table and summary
+    @test !isempty(r.xsecs) && all(x -> x.len > 0, r.xsecs)
+    @test any(l -> occursin("pair USB", l), si_summary_lines(r))
+    @test any(l -> occursin("Length 30.00 mm", l), si_net_report(r, "SIG2"))
+end
+
+@testset "SI: setup round trip and nominal stackup" begin
+    b = si_board()
+    dir = mktempdir()
+    s = new_setup(joinpath(dir, "si.kicad_pcb"), b)
+    SISolver.set_si_targets!(s, [SISolver.ZTarget("SIG*", 40.0, 5.0, :se), SISolver.ZTarget("USB", 85.0, NaN, :diff)])
+    SISolver.set_si_groups!(s, [SISolver.GroupDef("BUS", ["SIG1", "SIG2"], 10.0, :delay)])
+    s.si["pair_skew_mm"] = 0.1
+    save_setup(s)
+    s2, _ = load_setup(joinpath(dir, "si.kicad_pcb"), b)
+    ts = si_targets(s2)
+    @test length(ts) == 2 && ts[1].z == 40.0 && ts[1].tol_pct == 5.0 && ts[1].mode == :se && isnan(ts[2].tol_pct)
+    @test only(si_groups(s2)).by == :delay && si_settings(s2).pair_skew_mm == 0.1
+    r = solve_si(b, s2)
+    @test only(r.pairs).target == 85.0
+    @test only(n for n in r.nets if n.net == "SIG2").target == 40.0
+    @test any(i -> i.kind == :z && i.net == "SIG2", r.issues)          # a ~50 Ω microstrip misses 40 Ω ±5 %
+    # without a stackup the solver still runs, on a nominal 1.6 mm board, and says so
+    b0 = BP.BoardData(b.width, b.height, b.nets, b.components, b.traces, b.vias, b.zones, b.outline, BP.StackupLayer[])
+    r0 = solve_si(b0, new_setup("x.kicad_pcb", b0))
+    @test r0.ok && !r0.stack.defined && any(m -> occursin("nominal 1.6 mm", m), r0.messages)
+end
+
+@testset "HTML report" begin
+    @test Report.base64(UInt8[]) == "" && Report.base64(codeunits("f")) == "Zg==" &&
+          Report.base64(codeunits("fo")) == "Zm8=" && Report.base64(codeunits("foobar")) == "Zm9vYmFy"
+    b = testboard(comps = strip_parts(), zones = strip_zones())
+    s = testsetup(b)
+    s.ac["points_per_decade"] = 3
+    dc, ac = solve_dc(b, s), solve_ac(b, s)
+    bs = si_board()
+    ss = new_setup("si.kicad_pcb", bs)
+    si = solve_si(bs, ss)
+    dir = mktempdir()
+    png = joinpath(dir, "x.png")
+    write(png, UInt8[0x89, 0x50, 0x4e, 0x47])                       # contents don't matter, it is embedded as-is
+    path = write_report(joinpath(dir, "r.html"); board = b, setup = s, dc, ac, si, version = "v9",
+                        images = [(:dc, "Voltage <map>", png), (:si, "SI", png)])
+    html = read(path, String)
+    @test startswith(html, "<!doctype html>") && occursin("</html>", html)
+    for want in ("DC analysis", "AC analysis", "<svg", "Signal integrity", "Differential pairs", "Impedance table",
+                 "Stackup", "data:image/png;base64,iVBORw==", "Voltage &lt;map&gt;", "SNK1", "USB")
+        @test occursin(want, html)
+    end
+    @test count("<figure>", html) == 2
+    # without results it still writes a page that says so
+    empty_html = read(write_report(joinpath(dir, "e.html"); board = b, setup = s), String)
+    @test occursin("Run an analysis first", empty_html) && !occursin("DC analysis", empty_html)
+    @test report_path("/a/b/board.kicad_pcb") == "/a/b/board.perplex-report.html"
 end
 
 # ─────────────────────────────────────────────────────────────────────────────

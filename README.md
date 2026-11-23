@@ -2,11 +2,23 @@
 
 # PerplexForge
 
-A power-integrity workbench for **KiCad 10**. One click in the PCB Editor opens the current board in 3D, where you can:
+A power- and signal-integrity workbench for **KiCad 10**. One click in the PCB Editor opens the current board in 3D, where you can:
+
+**Power integrity**
 
 - **Set up the power network**: classify nets (power / ground / digital), then model parts as lumped elements: VRMs, sinks (loads), resistors, inductors, ferrites, 0 Ω links and capacitors. Values are pre-filled from the schematic.
 - **DC analysis (IR drop)**: voltage, IR-drop and current-density maps on every copper layer, the voltage at each load's pins, VRM currents, the most heavily loaded vias and the copper loss.
 - **AC analysis (PDN impedance)**: |Z(f)| seen by every load with target-impedance checks, and a 3D map of the noise voltage at any frequency you click.
+
+**Signal integrity**
+
+- **Trace impedance and delay**: every routed signal trace is solved with a 2-D field solver on its real cross-section: the board stackup, the reference planes above and below it, solder mask, a coplanar ground pour beside it, and its differential-pair partner. You get Z0, Zdiff, εeff and delay per trace, an impedance table of every cross-section on the board, and checks against your targets (USB pairs default to 90 Ω).
+- **Return paths**: traces that run off their reference plane or cross a gap or split in it, and signal vias that change reference plane without a nearby return via (or, when the reference changes net, a stitching capacitor).
+- **Lengths and skew**: net length and delay including vias, intra-pair skew of differential pairs (found by name: `_P/_N`, `+/-`, `DP/DM` …), length-match groups, and via stubs.
+
+Findings are graded: nets with an impedance target, differential pairs and length-group members get errors and warnings; everything else is a note.
+
+**Reports**: one click writes `<board>.perplex-report.html`, a self-contained report of the DC, AC and SI results with 3D snapshots. Open it in any browser, or print it to PDF.
 
 Your board is never modified. The simulation setup is saved next to it as `<board>.perplex.json`.
 
@@ -53,22 +65,23 @@ If the button does nothing, look at `~/Documents/KiCad/10.0/plugins/perplexforge
 
 </details>
 
-The version you're running is shown in the window title and the top bar, e.g. `v0.1.0`.
+The version you're running is shown in the window title and the top bar, e.g. `v0.1.0`. On macOS the Dock shows the PerplexForge icon while the workbench is open.
 
 ## Using it
 
 1. Save the board in KiCad and refill zones (**B**). PerplexForge reads the saved file.
-2. **Nets** tab: check the power/ground classes (they're guessed from net names).
-3. Click a part (in 3D or in the **Components** list) and **+ Add** an element: a VRM on the regulator or its output inductor, a sink on each load, and capacitors for AC.
-4. **▶ Run DC analysis** or **▶ Run AC sweep**. Results appear in the **Results** tab, on the copper in 3D, and (for AC) in the **Impedance** tab below the view.
-5. **Save** stores the setup next to the board.
+2. **Nets** tab: check the power/ground classes (they're guessed from net names). Ground and power pours are also the reference planes for signal integrity.
+3. **Analysis** tab: pick the simulation source, **Power integrity** (then **DC · IR drop** or **AC · PDN impedance**) or **Signal integrity**. Each analysis shows its **Configuration**, its own **▶ Run** button, what it draws on the copper, and its results.
+   - Power integrity: click a part (in 3D or in the **Components** list) and **+ Add** an element in the Inspector: a VRM on the regulator or its output inductor, a sink on each load, and capacitors for AC. AC curves appear in the **PDN impedance** tab below the view.
+   - Signal integrity needs no setup. Traces are coloured by impedance, by target or by reference type, and the **Signals** tables below the view list nets, pairs, cross-sections and findings. Click a finding to highlight it. Add impedance targets in the configuration (or `target *CLK* 50`) and length-match groups with `group add DDR_DQ 0.5 DQ*`.
+4. **Report** writes the HTML report; **Save** stores the setup next to the board. The camera presets and an overlay switcher are in the toolbar above the 3D view.
 
 Type `help` in the console for keyboard-friendly commands.
 
 ## Development
 
 ```text
-src/            workbench (GLMakie UI) and the GUI-free solvers (DCSolver, ACSolver, Mesh)
+src/            workbench (GLMakie UI) and the GUI-free solvers (DCSolver, ACSolver, Mesh, XSection, SISolver) and Report
 bin/            launch.jl (entry point) and perplexforge.bat / perplexforge.sh (run without KiCad)
 kicad_plugin/   the KiCad IPC plugin (Python launcher, plugin.json, toolbar icons)
 test/           unit tests; gui_snapshot.jl renders the UI offscreen
@@ -82,7 +95,7 @@ A copy running from a git checkout shows its version as `v0.1.0-dev (commit)`, s
 
 Run without KiCad: `julia --project=. bin/launch.jl path/to/board.kicad_pcb`
 
-Tests (the solvers are checked against hand calculations and the analytic plane-pair resonance):
+Tests (the solvers are checked against hand calculations, the analytic plane-pair resonance, and the exact stripline, coupled-stripline and microstrip impedance solutions):
 `julia --project=. test/runtests.jl`. Set `PERPLEXFORGE_TEST_BOARD` to a `.kicad_pcb` to also run the real-board tests.
 
 ### Branches and releases

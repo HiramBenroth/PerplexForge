@@ -145,7 +145,7 @@ println("impedance axis x-limits: ", zax.finallimits[].origin[1], " … ", zax.f
 ev.mousebutton[] = GLMakie.Makie.MouseButtonEvent(Mouse.left, Mouse.press)
 ev.mousebutton[] = GLMakie.Makie.MouseButtonEvent(Mouse.left, Mouse.release)
 println("picked frequency: ", ui.state.ac_freq[], "  mode: ", ui.state.result_mode[])
-ui.tabs_right.active[] = :results
+ui.select!(:pi, :ac)
 ui.exec("view iso")
 snap("09_ac_map_iso")
 for n in ui.state.layer_names

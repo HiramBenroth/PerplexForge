@@ -6,8 +6,8 @@ using GLMakie
 using ..BoardParser: BoardData, Component
 using ..SimSetups
 
-export UIState, changed!, request!, sel_component, find_element, shown_rail, AC_MODE, CLASS_COLORS, KIND_COLORS, KIND_TAGS,
-       lighten, darken, rgba
+export UIState, changed!, request!, sel_component, find_element, shown_rail, AC_MODE, SI_MODES, is_si_mode,
+       CLASS_COLORS, KIND_COLORS, KIND_TAGS, SEVERITY_COLORS, lighten, darken, rgba
 
 lighten(c::RGBf, t) = RGBf(c.r + (1 - c.r) * t, c.g + (1 - c.g) * t, c.b + (1 - c.b) * t)
 darken(c::RGBf, t) = RGBf(c.r * t, c.g * t, c.b * t)
@@ -60,9 +60,18 @@ mutable struct UIState
     ac_freq::Observable{Float64}                   # frequency for the "AC |V|" overlay (0 = none picked)
     ac_port::Observable{Int}                       # port index driven for the "AC |V|" overlay
     ac_rev::Int
+    si_result::Observable{Any}                     # last SIResult (or nothing)
+    si_rev::Int
+    si_issue::Observable{Int}                      # finding highlighted in 3D (0 = none)
 end
 
 const AC_MODE = "AC |V| at f"
+"Overlays of the signal-integrity result: traces coloured by impedance, by target check, by reference type."
+const SI_MODES = ("SI impedance", "SI vs target", "SI reference")
+is_si_mode(m) = m in SI_MODES
+
+const SEVERITY_COLORS = Dict(:error => RGBf(0.95, 0.35, 0.30), :warning => RGBf(0.98, 0.75, 0.25),
+                             :info => RGBf(0.60, 0.65, 0.75))
 
 "The rail to show in the voltage overlay for result `res`."
 function shown_rail(st::UIState, res)
