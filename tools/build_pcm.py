@@ -84,7 +84,7 @@ def main():
         "license": "MIT",
         "resources": {"homepage": home},
         "versions": [{"version": version, "status": args.status, "kicad_version": args.kicad,
-                      "runtime": "ipc", "platforms": ["windows"]}],
+                      "runtime": "ipc", "platforms": ["windows", "macos"]}],
     }
 
     # ── the package zip

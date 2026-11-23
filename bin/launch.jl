@@ -2,7 +2,7 @@
 #
 #   julia --project=<PerplexForge> bin/launch.jl <board.kicad_pcb>
 #
-# Started by the KiCad plugin (kicad_plugin/launch_workbench.py) or by bin/perplexforge.bat.
+# Started by the KiCad plugin (kicad_plugin/launch_workbench.py) or by bin/perplexforge.bat / .sh.
 
 function pause_before_exit(msg)
     println()

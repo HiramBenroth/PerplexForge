@@ -29,6 +29,20 @@ Then open a board in the PCB Editor and click the **PerplexForge** toolbar butto
 
 **Update**: run the same command again. **Uninstall**: delete `Documents\KiCad\10.0\plugins\perplexforge`.
 
+## Install (macOS)
+
+You need **KiCad 10**. Quit KiCad, open **Terminal** and paste:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HiramBenroth/PerplexForge/main/install.sh | bash
+```
+
+It does the same four steps as the Windows installer (Julia comes from the official `juliaup` installer). Then open a board in the PCB Editor and click the **PerplexForge** toolbar button. The workbench opens in a Terminal window, which shows its progress and any errors; keep it open while you work.
+
+**Update**: run the same command again. **Uninstall**: delete `~/Documents/KiCad/10.0/plugins/perplexforge`.
+
+If the button does nothing, look at `~/Documents/KiCad/10.0/plugins/perplexforge/perplexforge_plugin.log`.
+
 <details>
 <summary>Other ways to install</summary>
 
@@ -55,12 +69,13 @@ Type `help` in the console for keyboard-friendly commands.
 
 ```text
 src/            workbench (GLMakie UI) and the GUI-free solvers (DCSolver, ACSolver, Mesh)
-bin/            launch.jl (entry point) and perplexforge.bat (run without KiCad)
+bin/            launch.jl (entry point) and perplexforge.bat / perplexforge.sh (run without KiCad)
 kicad_plugin/   the KiCad IPC plugin (Python launcher, plugin.json, toolbar icons)
 test/           unit tests; gui_snapshot.jl renders the UI offscreen
 tools/          release.ps1 (publish a release), build_pcm.py (build the add-on package)
 assets/         icons and their SVG sources
-install.ps1     the one-line installer
+install.ps1     the one-line installer (Windows)
+install.sh      the one-line installer (macOS)
 ```
 
 A copy running from a git checkout shows its version as `v0.1.0-dev (commit)`, so it's never confused with an installed release.
