@@ -2,8 +2,8 @@
   "packages": [
     {
       "name": "PerplexForge",
-      "description": "Power-integrity workbench for KiCad: DC IR-drop and AC PDN-impedance on your board in 3D (needs Julia).",
-      "description_full": "PerplexForge opens the current board in a 3D power-integrity workbench.\n\n- Classify nets (power / ground / digital) and model components as lumped elements: VRMs, sinks, R, L, ferrite, 0 ohm, capacitors.\n- DC analysis: voltage, IR drop and current density maps on every copper layer, sink voltages, via currents and copper loss.\n- AC analysis: PDN impedance |Z(f)| at every sink with target-impedance checks, plus 3D maps of the noise voltage at any frequency.\n\nRequirements: KiCad 10 with the KiCad API enabled (Preferences > Plugins), and Julia 1.12 or newer (https://julialang.org/install/).\nThe first launch installs PerplexForge's Julia packages, which takes several minutes once.\nYour board is never modified; the simulation setup is saved next to it as <board>.perplex.json.",
+      "description": "Power & signal integrity for KiCad: IR drop, PDN impedance, trace impedance, return paths and skew, in 3D (needs Julia).",
+      "description_full": "PerplexForge opens the current board in a 3D power- and signal-integrity workbench.\n\n- Classify nets (power / ground / digital) and model components as lumped elements: VRMs, sinks, R, L, ferrite, 0 ohm, capacitors.\n- DC analysis: voltage, IR drop and current density maps on every copper layer, sink voltages, via currents and copper loss.\n- AC analysis: PDN impedance |Z(f)| at every sink with target-impedance checks, plus 3D maps of the noise voltage at any frequency.\n- Signal integrity: trace impedance and delay from a 2-D field solver on the real stackup (microstrip, stripline, coplanar ground,\n  differential pairs), return-path checks (plane gaps and splits, reference changes without return vias), net lengths,\n  differential-pair skew and length-match groups.\n- One-click HTML report of all results (prints to PDF).\n\nRequirements: KiCad 10 with the KiCad API enabled (Preferences > Plugins), and Julia 1.12 or newer (https://julialang.org/install/).\nThe first launch installs PerplexForge's Julia packages, which takes several minutes once.\nYour board is never modified; the simulation setup is saved next to it as <board>.perplex.json.",
       "identifier": "com.github.hirambenroth.perplexforge",
       "type": "plugin",
       "author": {
@@ -18,7 +18,7 @@
       },
       "versions": [
         {
-          "version": "0.1.4",
+          "version": "0.2.0",
           "status": "stable",
           "kicad_version": "10.0",
           "runtime": "ipc",
@@ -26,10 +26,10 @@
             "windows",
             "macos"
           ],
-          "download_url": "https://github.com/HiramBenroth/PerplexForge/releases/download/v0.1.4/PerplexForge-0.1.4.zip",
-          "download_sha256": "70ded68b614775d5ad7a9e39e1e3d9f169601be048019eb31a0821a5ab927fae",
-          "download_size": 104550,
-          "install_size": 269846
+          "download_url": "https://github.com/HiramBenroth/PerplexForge/releases/download/v0.2.0/PerplexForge-0.2.0.zip",
+          "download_sha256": "0ad3ddcb69800e2e6eb6e4a15845c94f27c7713618bd8f44bf44d7b08fab6893",
+          "download_size": 287603,
+          "install_size": 563450
         }
       ]
     }
