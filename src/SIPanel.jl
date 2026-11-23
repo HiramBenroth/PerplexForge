@@ -1,8 +1,8 @@
 module SIPanel
 
-# Signal-integrity UI: the right-dock "Signals" tab (run, overlay key, findings, pairs,
-# groups, impedance targets, settings) and the bottom "Signals" tables (nets, pairs,
-# cross-sections, findings).
+# Signal-integrity UI: the SI analysis in the Analysis tab (configuration, run, findings,
+# pairs, groups, overlay key) and the bottom "Signals" tables (nets, pairs, cross-sections,
+# findings).
 
 using GLMakie
 using Printf
@@ -10,10 +10,10 @@ using ..SimSetups
 using ..WorkbenchState
 using ..Widgets
 using ..SISolver
-using ..ResultsPanel: settings_grid!, wrap
+using ..ResultsPanel: settings_grid!, wrap, config_header!, title!, run_button!
 using ..Scene3D: SI_STATUS_COLORS, SI_KIND_COLORS
 
-export build_si_panel!, build_si_table!, SI_RUN_COLOR, SI_TABLES
+export si_panel!, build_si_table!, SI_RUN_COLOR, SI_TABLES
 
 const SI_RUN_COLOR = RGBf(0.42, 0.25, 0.62)
 const DIM = RGBf(0.55, 0.55, 0.60)
@@ -76,37 +76,27 @@ function focus_issue!(st::UIState, res, k)
            (isnan(iss.x) ? "" : @sprintf("  @ (%.2f, %.2f)%s", iss.x, iss.y, isempty(iss.layer) ? "" : " " * iss.layer)))
 end
 
-function build_si_panel!(p::DynPanel, st::UIState; run!::Function)
-    h = p.host
-    r = 1
+"Signal integrity: configuration (targets, settings), run, results (findings, pairs, groups), overlay."
+function si_panel!(p::DynPanel, st::UIState, h, r; run!::Function, maxrows::Int = 40)
     res = st.si_result[]
-
-    section!(p, h, r, "SIGNAL INTEGRITY"); r += 1
-    b = blk!(p, Button(h[r, 1:2]; label = "▶  Run SI analysis", tellwidth = false, width = Relative(1),
-                       buttoncolor = SI_RUN_COLOR, labelcolor = :white, padding = (8, 8, 6, 6))); r += 1
-    on(b.clicks) do _; run!(); end
-    if res === nothing
-        line!(p, h, r, "Not run yet. Classify your Power and Ground nets (Nets tab),\nrefill zones in KiCad (B) and save, then Run." *
-                       "\nImpedance, return paths and lengths are computed\nfor every routed signal net."; color = DIM); r += 1
-    elseif !res.ok
-        for msg in first(res.messages, 5)
-            line!(p, h, r, wrap("• " * msg, 58); color = BAD_C, fontsize = 11); r += 1
+    r = title!(p, h, r, "Signal integrity", "Trace impedance and delay (2-D field solver), return paths, lengths and skew\nof every routed signal net. No setup needed beyond Power / Ground net classes.")
+    ts = si_targets(st.setup)
+    ng = length(si_groups(st.setup))
+    sumtxt = "$(length(ts)) target$(length(ts) == 1 ? "" : "s"), $ng length group$(ng == 1 ? "" : "s")"
+    r, open = config_header!(p, st, h, r, "si", res !== nothing, sumtxt)
+    if open
+        line!(p, h, r, "Reference planes are the pours of nets classed Power or Ground (Nets tab).\nRefill zones in KiCad (B) and save first."; color = DIM, fontsize = 11); r += 1
+        r = targets_section!(p, st, h, r, ts)
+        section!(p, h, r, "LENGTH-MATCH GROUPS"); r += 1
+        gs = si_groups(st.setup)
+        for g in gs
+            line!(p, h, r, "$(g.name): $(join(g.patterns, " ")) within $(g.tol) $(g.by == :delay ? "ps" : "mm")"; fontsize = 12); r += 1
         end
-    else
-        st.si_rev != st.rev[] && (line!(p, h, r, "Setup changed since this run: run again to update."; color = SEVERITY_COLORS[:warning]); r += 1)
-        line!(p, h, r, @sprintf("%d nets · %d pairs · %d cross-sections solved · %.1f s", length(res.nets), length(res.pairs),
-                                res.nxs_solved, res.seconds); color = DIM, fontsize = 11); r += 1
-        ne, nw, ni = (count(i -> i.severity == s, res.issues) for s in (:error, :warning, :info))
-        g = sub!(p, h[r, 1:2]); r += 1
-        for (i, (n, s, lab)) in enumerate(((ne, :error, "errors"), (nw, :warning, "warnings"), (ni, :info, "notes")))
-            blk!(p, Label(g[1, i], "●  $n $lab"; color = SEVERITY_COLORS[s], halign = :left, fontsize = 13, font = :bold))
-        end
-        colgap!(g, 14)
-        for m in first(res.messages, 2)
-            line!(p, h, r, wrap("• " * m, 58); color = DIM, fontsize = 11); r += 1
-        end
+        line!(p, h, r, "Console:  group add DDR_DQ 0.5 DQ* DQS*   ·   group rm <name>\n(tolerance in mm; add 'delay' to match in ps)"; color = DIM, fontsize = 11); r += 1
+        section!(p, h, r, "SETTINGS"); r += 1
+        r = settings_grid!(p, st, h, r, SI_SETTING_SPECS, st.setup.si, SISettings(), "[si]")
     end
-
+    r = run_button!(p, h, r, "▶  Run SI analysis", SI_RUN_COLOR, run!)
     # ── overlay
     section!(p, h, r, "ON THE COPPER"); r += 1
     g = sub!(p, h[r, 1:2]); r += 1
@@ -116,7 +106,7 @@ function build_si_panel!(p::DynPanel, st::UIState; run!::Function)
     on(m.selection) do s
         (s === nothing || s == cur) && return
         st.result_mode[] = s
-        request!(st, :right)
+        request!(st, :analysis)
     end
     if res !== nothing && res.ok && is_si_mode(cur)
         if cur == "SI impedance"
@@ -139,6 +129,29 @@ function build_si_panel!(p::DynPanel, st::UIState; run!::Function)
         line!(p, h, r, "◆ markers: findings (red error · amber warning · grey note)"; color = DIM, fontsize = 11); r += 1
     end
 
+
+    section!(p, h, r, "RESULTS"); r += 1
+    if res === nothing
+        line!(p, h, r, "Not run yet."; color = DIM); r += 1
+    elseif !res.ok
+        for msg in first(res.messages, 5)
+            line!(p, h, r, wrap("• " * msg, 58); color = BAD_C, fontsize = 11); r += 1
+        end
+    else
+        st.si_rev != st.rev[] && (line!(p, h, r, "Setup changed since this run: run again to update."; color = SEVERITY_COLORS[:warning]); r += 1)
+        line!(p, h, r, @sprintf("%d nets · %d pairs · %d cross-sections solved · %.1f s", length(res.nets), length(res.pairs),
+                                res.nxs_solved, res.seconds); color = DIM, fontsize = 11); r += 1
+        ne, nw, ni = (count(i -> i.severity == s, res.issues) for s in (:error, :warning, :info))
+        g = sub!(p, h[r, 1:2]); r += 1
+        for (i, (n, s, lab)) in enumerate(((ne, :error, "errors"), (nw, :warning, "warnings"), (ni, :info, "notes")))
+            blk!(p, Label(g[1, i], "●  $n $lab"; color = SEVERITY_COLORS[s], halign = :left, fontsize = 13, font = :bold))
+        end
+        colgap!(g, 14)
+        for m in first(res.messages, 2)
+            line!(p, h, r, wrap("• " * m, 58); color = DIM, fontsize = 11); r += 1
+        end
+    end
+
     if res !== nothing && res.ok
         # ── findings
         show_all = get(st.setup.view, "si_show_notes", false) == true
@@ -148,32 +161,34 @@ function build_si_panel!(p::DynPanel, st::UIState; run!::Function)
         on(cb.checked) do v
             st.setup.view["si_show_notes"] = v
             notify(st.si_issue)                    # redraw the 3D markers
-            request!(st, :right)
+            request!(st, :analysis)
         end
         isempty(shown) && (line!(p, h, r, "None."; color = OK_C); r += 1)
-        for (k, iss) in first(shown, 12)
+        room = max(4, maxrows - r - 8)                      # rows left for findings + pairs
+        nf = clamp(room * 3 ÷ 5, 2, 12)
+        np_ = clamp(room - nf, 2, 8)
+        for (k, iss) in first(shown, nf)
             txt = (k == st.si_issue[] ? "▸ " : "") * issue_label(iss)
-            r = row_button!(p, h, r, txt, SEVERITY_COLORS[iss.severity], () -> (focus_issue!(st, res, k); request!(st, :right)))
+            r = row_button!(p, h, r, txt, SEVERITY_COLORS[iss.severity], () -> (focus_issue!(st, res, k); request!(st, :analysis)))
         end
-        length(shown) > 12 && (line!(p, h, r, "… $(length(shown) - 12) more in the Signals table (bottom)"; color = DIM, fontsize = 11); r += 1)
+        length(shown) > nf && (line!(p, h, r, "… $(length(shown) - nf) more in the Signals table (bottom)"; color = DIM, fontsize = 11); r += 1)
 
         # ── pairs
         if !isempty(res.pairs)
             section!(p, h, r, "DIFFERENTIAL PAIRS ($(length(res.pairs)))"); r += 1
-            for pr in first(sort(res.pairs; by = x -> (x.z_ok && x.skew_ok, x.name)), 8)
+            for pr in first(sort(res.pairs; by = x -> (x.z_ok && x.skew_ok, x.name)), np_)
                 ok = pr.z_ok && pr.skew_ok
                 txt = @sprintf("%s  Zdiff %s%s  skew %.2f mm %s", clip(pair_label(pr), 18), fz(pr.zd_avg),
                                isnan(pr.target) ? "" : @sprintf(" %s", tick(pr.z_ok)), pr.skew, tick(pr.skew_ok))
                 r = row_button!(p, h, r, txt, ok ? OK_C : BAD_C, () -> (st.sel[] = (:net, pr.p)))
             end
-            length(res.pairs) > 8 && (line!(p, h, r, "… all pairs in the Signals table (bottom)"; color = DIM, fontsize = 11); r += 1)
+            length(res.pairs) > np_ && (line!(p, h, r, "… all pairs in the Signals table (bottom)"; color = DIM, fontsize = 11); r += 1)
         end
 
         # ── groups
         section!(p, h, r, "LENGTH-MATCH GROUPS"); r += 1
         if isempty(res.groups)
-            line!(p, h, r, "None. Console:  group add DDR_DQ 0.5 DQ* DQS*\n(name, tolerance in mm, net patterns; add 'delay' to match in ps)";
-                  color = DIM, fontsize = 11); r += 1
+            line!(p, h, r, "None defined (see Configuration)."; color = DIM, fontsize = 11); r += 1
         end
         for gr in res.groups
             txt = @sprintf("%s   %d nets   spread %.3f %s (≤ %g) %s", gr.name, length(gr.members), gr.spread,
@@ -182,7 +197,11 @@ function build_si_panel!(p::DynPanel, st::UIState; run!::Function)
         end
     end
 
-    # ── targets (editable)
+    return r
+end
+
+"Editable impedance target list."
+function targets_section!(p, st, h, r, ts)
     section!(p, h, r, "IMPEDANCE TARGETS"); r += 1
     ts = si_targets(st.setup)
     for (i, t) in enumerate(ts)
@@ -193,7 +212,7 @@ function build_si_panel!(p::DynPanel, st::UIState; run!::Function)
         x = blk!(p, Button(g[1, 2]; label = "✕", padding = (6, 6, 2, 2), fontsize = 11, width = 26))
         on(x.clicks) do _
             set_si_targets!(st.setup, [u for (j, u) in enumerate(ts) if j != i])
-            changed!(st); request!(st, :right)
+            changed!(st); request!(st, :analysis)
             st.say("[si] removed target $(t.pattern) (run again to apply)")
         end
     end
@@ -211,21 +230,18 @@ function build_si_panel!(p::DynPanel, st::UIState; run!::Function)
         (isempty(ps) || z === nothing) && return st.say("[si] Enter a net pattern and an impedance, e.g. *CLK* 50.")
         mode = md.selection[] == "diff" ? :diff : :se
         set_si_targets!(st.setup, vcat(ts, [ZTarget(String(ps), z, NaN, mode)]))
-        changed!(st); request!(st, :right)
+        changed!(st); request!(st, :analysis)
         st.say("[si] target $ps $(mode == :diff ? "differential" : "single-ended") $(z) Ω (run again to apply)")
     end
     if haskey(st.setup.si, "targets")
         b = blk!(p, Button(h[r, 1:2]; label = "Reset to defaults (USB 90 Ω differential)", tellwidth = false, width = Relative(1),
                            fontsize = 11, padding = (4, 4, 3, 3))); r += 1
         on(b.clicks) do _
-            delete!(st.setup.si, "targets"); changed!(st); request!(st, :right)
+            delete!(st.setup.si, "targets"); changed!(st); request!(st, :analysis)
         end
     end
 
-    section!(p, h, r, "SI SETTINGS"); r += 1
-    r = settings_grid!(p, st, h, r, SI_SETTING_SPECS, st.setup.si, SISettings(), "[si]")
-    rowgap!(h, 4)
-    return p
+    return r
 end
 
 # ─────────────────────────────────────────────────────────────────────────────

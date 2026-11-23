@@ -27,7 +27,8 @@ include("Scene3D.jl")       # geometry + 3D scene
 include("Inspector.jl")     # net / component / element inspector
 include("ResultsPanel.jl")  # DC / AC results tab
 include("ImpedancePanel.jl") # |Z(f)| plot tab
-include("SIPanel.jl")       # signal-integrity tab and tables
+include("SIPanel.jl")       # signal-integrity analysis panel and tables
+include("AnalysisPanel.jl") # Analysis tab: simulation source → analysis → configure / run / results
 include("Viewer.jl")        # the workbench window
 using .Viewer
 

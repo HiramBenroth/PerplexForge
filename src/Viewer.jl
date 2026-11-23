@@ -18,6 +18,7 @@ using ..ResultsPanel
 using ..ImpedancePanel
 using ..SISolver
 using ..SIPanel
+using ..AnalysisPanel
 using ..Report
 using Printf
 
@@ -45,6 +46,33 @@ function set_window_icon!(screen)
     end
 end
 
+"""
+macOS: replace the Dock icon (by default Julia's, or a generic executable) with the
+PerplexForge app icon. GLFW's window icons are ignored on macOS, so this goes through the
+Objective-C runtime: `[NSApp setApplicationIconImage:[[NSImage alloc] initWithContentsOfFile:path]]`.
+Must run on the main thread after GLFW has created the application (i.e. after the window opens).
+"""
+const LIBOBJC = "/usr/lib/libobjc.A.dylib"
+function set_dock_icon!(path)
+    (Sys.isapple() && isfile(path)) || return false
+    try
+        cls(n) = ccall((:objc_getClass, LIBOBJC), Ptr{Cvoid}, (Cstring,), n)
+        sel(n) = ccall((:sel_registerName, LIBOBJC), Ptr{Cvoid}, (Cstring,), n)
+        msg(o, s) = ccall((:objc_msgSend, LIBOBJC), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}), o, sel(s))
+        str = ccall((:objc_msgSend, LIBOBJC), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}, Cstring),
+                    cls("NSString"), sel("stringWithUTF8String:"), path)
+        img = ccall((:objc_msgSend, LIBOBJC), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+                    msg(cls("NSImage"), "alloc"), sel("initWithContentsOfFile:"), str)
+        img == C_NULL && return false
+        app = msg(cls("NSApplication"), "sharedApplication")
+        ccall((:objc_msgSend, LIBOBJC), Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), app, sel("setApplicationIconImage:"), img)
+        return true
+    catch err
+        @warn "Could not set the Dock icon" exception = err
+        return false
+    end
+end
+
 const TXT = RGBf(0.92, 0.92, 0.95)
 const WORKBENCH_THEME = Theme(
     Button = (buttoncolor = BTN_BG, buttoncolor_hover = RGBf(0.32, 0.33, 0.40), buttoncolor_active = BTN_ACTIVE,
@@ -58,6 +86,9 @@ const WORKBENCH_THEME = Theme(
                textcolor = TXT, textcolor_placeholder = RGBf(0.45, 0.45, 0.50), cursorcolor = :white, fontsize = 14),
     Label = (color = TXT,),
 )
+
+const MIN_CENTER, MIN_VIEW = 480, 220             # smallest 3D view (px) before the docks start to shrink
+const MIN_LEFT, MIN_RIGHT = 170, 260               # docks never shrink below these
 
 const ABOUT_TEXT = """PerplexForge: power and signal integrity for KiCad.
 DC IR drop · AC PDN impedance · trace impedance (2-D field solver),
@@ -150,23 +181,26 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     logo = load_png(asset_path("icons", "icon_48.png"))           # shown 1:1 so it stays crisp
     logo === nothing || image!(logo_ax, rotr90(logo); interpolate = false)
     tightlimits!(logo_ax)
-    title = Label(top[1, 2], ""; fontsize = 19, font = :bold, halign = :left)
-    btn_check = Button(top[1, 4]; label = "▶  Run DC analysis", buttoncolor = RGBf(0.13, 0.50, 0.27),
-                       labelcolor = :white, padding = (14, 14, 7, 7))
-    btn_ac = Button(top[1, 5]; label = "▶  Run AC sweep", buttoncolor = RGBf(0.15, 0.35, 0.60),
-                    labelcolor = :white, padding = (14, 14, 7, 7))
-    btn_si = Button(top[1, 6]; label = "▶  Run SI analysis", buttoncolor = SI_RUN_COLOR,
-                    labelcolor = :white, padding = (14, 14, 7, 7))
-    btn_save = Button(top[1, 7]; label = "Save", padding = (16, 16, 7, 7))
-    btn_report = Button(top[1, 8]; label = "Report", padding = (14, 14, 7, 7))
-    vbtn = Dict(k => Button(top[1, 8 + i]; label = l, padding = (11, 11, 7, 7))
-                for (i, (k, l)) in enumerate(((:keep, "Fit"), (:top, "Top"), (:iso, "Iso"), (:side, "Side"), (:bottom, "Bottom"))))
-    # the status line takes the flexible space between the title and the buttons, so the bar fits small windows
-    status = Label(top[1, 3], "Ready"; halign = :right, color = :gray70, fontsize = 13, tellwidth = false,
-                   padding = (12, 12, 0, 0))
+    # The title never asks for width (tellwidth = false): it is shortened to fit instead, so a
+    # narrow window can't push the logo or the buttons out of the frame.
+    title = Label(top[1, 2], ""; fontsize = 19, font = :bold, halign = :left, tellwidth = false)
+    btn_save = Button(top[1, 3]; label = "Save", padding = (16, 16, 7, 7))
+    btn_report = Button(top[1, 4]; label = "Report", padding = (14, 14, 7, 7))
     colgap!(top, 8)
-    update_title() = (title.text[] = rich("PerplexForge ", rich(version; color = :gray60, fontsize = 13, font = :regular),
-                                          "  ·  " * boardname * (st.setup.dirty ? "   ●  unsaved" : "")))
+    function update_title()
+        W = widths(fig.scene.viewport[])[1]
+        budget = max(8, floor(Int, (W - 48 - 190 - 60) / 10.5))        # characters that fit at 19 pt bold
+        dirty = st.setup.dirty ? "   ●  unsaved" : ""
+        name = boardname
+        full = length("PerplexForge ") + length(version) + 5 + length(name) + length(dirty)
+        if full <= budget
+            title.text[] = rich("PerplexForge ", rich(version; color = :gray60, fontsize = 13, font = :regular), "  ·  " * name * dirty)
+        else
+            room = budget - length(dirty)
+            name = length(name) <= room ? name : first(name, max(room - 1, 4)) * "…"
+            title.text[] = rich(name * dirty)
+        end
+    end
 
     # ── main area: left | splitter | centre | splitter | right ───────────────
     main = GridLayout(fig[2, 1])
@@ -192,16 +226,67 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     sayref[] = (msg...) -> log!(console, msg...)
     rowsize!(center, 3, Fixed(hc[]))
     cmdbox = Textbox(center[4, 1]; placeholder = "▸ command  (type help)", width = Relative(1), tellwidth = false)
-    bs = build_scene!(center[1, 1], st, layers, zcu, slabs, bounds; say = say)
+    viewgl = GridLayout(center[1, 1])
+    vtool = GridLayout(viewgl[1, 1]; tellwidth = false, halign = :left)
+    bs = build_scene!(viewgl[2, 1], st, layers, zcu, slabs, bounds; say = say)
+    rowgap!(viewgl, 4)
     rowgap!(center, 4)
+    # view toolbar: camera presets on the left, overlay quick-switch on the right
+    Label(vtool[1, 1], "View"; color = :gray60, fontsize = 12)
+    vbtn = Dict(k => Button(vtool[1, 1 + i]; label = l, padding = (8, 8, 3, 3), fontsize = 12)
+                for (i, (k, l)) in enumerate(((:keep, "Fit"), (:top, "Top"), (:iso, "Iso"), (:side, "Side"), (:bottom, "Bottom"))))
+    Label(vtool[1, 7], ""; tellwidth = false)
+    Label(vtool[1, 8], "Overlay"; color = :gray60, fontsize = 12)
+    overlay_menu = Menu(vtool[1, 9]; options = OVERLAY_MODES, default = st.result_mode[] in OVERLAY_MODES ? st.result_mode[] : "Off",
+                        width = 170, fontsize = 12, textpadding = (6, 6, 3, 3))
+    on(overlay_menu.selection) do s
+        s === nothing || s == st.result_mode[] || (st.result_mode[] = s)
+    end
+    on(st.result_mode) do m
+        m in OVERLAY_MODES && overlay_menu.selection[] != m && (overlay_menu.i_selected[] = findfirst(==(m), OVERLAY_MODES))
+    end
+    colgap!(vtool, 4)
 
+    # ── status bar ───────────────────────────────────────────────────────────
+    sbar = GridLayout(fig[3, 1]; tellwidth = false)
+    status = Label(sbar[1, 1], "Ready"; halign = :left, color = :gray70, fontsize = 12, tellwidth = false)
+    Label(sbar[1, 2], "left-drag orbit · right-drag pan · scroll zoom · click to select"; halign = :right,
+          color = :gray45, fontsize = 11, tellwidth = false)
+    rowsize!(fig.layout, 3, Fixed(18))
+
+    # wl / wr / hc are the sizes the user asked for (saved with the setup); el / er / ec are what
+    # fits the current window. When the window is too small the docks and the console shrink
+    # (down to a floor) so the 3D view keeps at least MIN_CENTER × MIN_VIEW pixels.
+    el, er, ec = Ref(wl[]), Ref(wr[]), Ref(hc[])
+    function fit_layout!()
+        W, H = widths(fig.scene.viewport[])
+        avail = W - MIN_CENTER - 40
+        l, rr = wl[], wr[]
+        if l + rr > avail
+            f = max(avail, 0) / (l + rr)
+            l, rr = max(MIN_LEFT, l * f), max(MIN_RIGHT, rr * f)
+        end
+        c = clamp(hc[], 60, max(60, H - MIN_VIEW - 200))
+        (l, rr, c) == (el[], er[], ec[]) && return
+        el[], er[], ec[] = l, rr, c
+        colsize!(main, 1, Fixed(l)); colsize!(main, 5, Fixed(rr)); rowsize!(center, 3, Fixed(c))
+    end
+    "How many ~25 px rows fit in the right dock (the panels size their lists to it; it can't scroll)."
+    row_budget() = floor(Int, (widths(fig.scene.viewport[])[2] - 50 - 18 - 40 - 30) / 25.5)
+    last_budget = Ref(0)
+    on(fig.scene.viewport) do _
+        fit_layout!()
+        update_title()
+        b = row_budget()
+        b != last_budget[] && (last_budget[] = b; request!(st, :right))
+    end
     splitters = (
-        left = Splitter(fig, main[1, 2], :v; getsize = () -> wl[], sign = 1, minsize = 220, maxsize = 700,
-                        setsize! = w -> (wl[] = w; colsize!(main, 1, Fixed(w)))),
-        right = Splitter(fig, main[1, 4], :v; getsize = () -> wr[], sign = -1, minsize = 300, maxsize = 800,
-                         setsize! = w -> (wr[] = w; colsize!(main, 5, Fixed(w)))),
-        console = Splitter(fig, center[2, 1], :h; getsize = () -> hc[], sign = 1, minsize = 60, maxsize = 700,
-                           setsize! = h -> (hc[] = h; rowsize!(center, 3, Fixed(h)))),
+        left = Splitter(fig, main[1, 2], :v; getsize = () -> el[], sign = 1, minsize = MIN_LEFT, maxsize = 700,
+                        setsize! = w -> (wl[] = w; fit_layout!())),
+        right = Splitter(fig, main[1, 4], :v; getsize = () -> er[], sign = -1, minsize = MIN_RIGHT, maxsize = 800,
+                         setsize! = w -> (wr[] = w; fit_layout!())),
+        console = Splitter(fig, center[2, 1], :h; getsize = () -> ec[], sign = 1, minsize = 60, maxsize = 700,
+                           setsize! = h -> (hc[] = h; fit_layout!())),
         sizes = () -> (left = wl[], right = wr[], console = hc[]),
     )
 
@@ -343,8 +428,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     end
 
     # ── right dock: inspector / view ─────────────────────────────────────────
-    tabs_r = TabBar(GridLayout(right[1, 1]), [:inspector => "Inspector", :results => "Power", :signals => "Signals",
-                                              :view => "View"])
+    tabs_r = TabBar(GridLayout(right[1, 1]), [:inspector => "Inspector", :analysis => "Analysis", :view => "View"])
     rpanel = DynPanel(GridLayout(right[2, 1]; valign = :top, tellheight = false))
     rowgap!(right, 8)
 
@@ -420,7 +504,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     function flush_ui!()
         isempty(st.pending) && return
         tab = tabs_r.active[]
-        want = (:right in st.pending) || (tab in st.pending)
+        want = (:right in st.pending) || (tab in st.pending) ||
+               (tab == :analysis && any(k -> k in st.pending, (:results, :signals)))
         bottom_want = :impedance in st.pending || :si_table in st.pending
         empty!(st.pending)
         if bottom_want
@@ -438,8 +523,9 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         want || return
         rebuild!(rpanel) do p
             tab == :inspector ? build_inspector!(p, st) :
-            tab == :results   ? build_results_panel!(p, st; run! = () -> run_dc!(), run_ac! = () -> run_ac!()) :
-            tab == :signals   ? build_si_panel!(p, st; run! = () -> run_si!()) :
+            tab == :analysis  ? build_analysis_panel!(p, st; run_dc! = () -> run_dc!(), run_ac! = () -> run_ac!(),
+                                                      run_si! = () -> run_si!(), select! = (s, a) -> select_analysis!(s, a),
+                                                      maxrows = row_budget()) :
                                 build_view_panel!(p)
         end
     end
@@ -447,6 +533,27 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         flush_ui!()
     end
     on(tabs_r.active) do _; request!(st, :right); end
+
+    "Show an analysis in the Analysis tab, with its overlay on the copper and its bottom tab."
+    function select_analysis!(src::Symbol, an = nothing)
+        vw = st.setup.view
+        vw["source"] = string(src)
+        src == :pi && an !== nothing && (vw["pi_analysis"] = string(an))
+        _, a = current_analysis(st)
+        ok(r) = r !== nothing && r.ok
+        m = st.result_mode[]
+        if a == :dc
+            st.result_mode[] = ok(st.result[]) ? (m in DC_MODES ? m : "Voltage") : "Off"
+        elseif a == :ac
+            st.result_mode[] = ok(st.ac_result[]) && st.ac_freq[] > 0 ? AC_MODE : "Off"
+            ok(st.ac_result[]) && (tabs_b.active[] = :impedance)
+        else
+            st.result_mode[] = ok(st.si_result[]) ? (is_si_mode(m) ? m : "SI vs target") : "Off"
+            ok(st.si_result[]) && (tabs_b.active[] = :signals)
+        end
+        tabs_r.active[] = :analysis
+        request!(st, :analysis)
+    end
 
     # ── selection / changes ──────────────────────────────────────────────────
     on(st.sel) do s
@@ -457,19 +564,19 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     on(st.rev) do _
         update_title()
         refresh_browser!(true)
-        request!(st, :results)                     # "setup changed since this run" note
+        request!(st, :analysis)                     # "setup changed since this run" note
         request!(st, :signals)
     end
     on(st.result) do _
-        request!(st, :results)
+        request!(st, :analysis)
     end
     on(st.ac_result) do _
-        request!(st, :results)
+        request!(st, :analysis)
         request!(st, :impedance)
     end
     on(st.result_mode) do _
         request!(st, :signals)
-        request!(st, :results)
+        request!(st, :analysis)
     end
     on(st.si_result) do _
         request!(st, :signals)
@@ -600,8 +707,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         st.result_rev = st.rev[]
         st.result[] = res
         if res.ok
-            st.result_mode[] == "Off" && (st.result_mode[] = "Voltage")
-            tabs_r.active[] = :results
+            select_analysis!(:pi, :dc)
             if isempty(res.sinks)
                 status.text[] = @sprintf("DC solved in %.1f s", res.seconds)
             else
@@ -619,7 +725,6 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
             end
         end
     end
-    on(btn_check.clicks) do _; run_dc!(); end
 
     function run_ac!()
         if !any(e -> e.kind == :sink, st.setup.elements)
@@ -639,8 +744,9 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         st.ac_rev = st.rev[]
         st.ac_result[] = res
         if res.ok
-            tabs_b.active[] = :impedance
             st.ac_port[] = clamp(st.ac_port[], 1, max(1, length(res.ports)))
+            select_analysis!(:pi, :ac)
+            tabs_b.active[] = :impedance
             bad = [p for p in res.ports if !isempty(target_violations(res.freqs, p.Z, p.target))]
             status.text[] = isempty(bad) ? "AC: all ports meet their target impedance" :
                             "AC: $(length(bad)) port(s) above target (see the PDN impedance tab)"
@@ -648,7 +754,6 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
             status.text[] = "AC sweep failed (see console)"
         end
     end
-    on(btn_ac.clicks) do _; run_ac!(); end
 
     function run_si!()
         say("[si] Analysing signal integrity (impedance, return paths, lengths)…")
@@ -665,9 +770,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         st.si_issue[] = 0
         st.si_result[] = res
         if res.ok
-            is_si_mode(st.result_mode[]) || (st.result_mode[] = "SI vs target")
-            tabs_r.active[] = :signals
-            tabs_b.active[] = :signals
+            select_analysis!(:si)
             ne = count(i -> i.severity == :error, res.issues)
             nw = count(i -> i.severity == :warning, res.issues)
             bad = count(p -> !(p.z_ok && p.skew_ok), res.pairs)
@@ -676,7 +779,6 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
             status.text[] = "SI analysis failed (see console)"
         end
     end
-    on(btn_si.clicks) do _; run_si!(); end
 
     # ── report ───────────────────────────────────────────────────────────────
     screen_ref = Ref{Any}(nothing)
@@ -991,7 +1093,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
                 x === nothing && return say("Usage: freq <Hz>  (e.g. freq 120M)")
                 st.ac_freq[] = x
                 st.result_mode[] = AC_MODE
-                request!(st, :results)
+                request!(st, :analysis)
                 say("[ac] 3D map at $(format_si(x, "Hz"))")
             elseif cmd == "port"
                 res = st.ac_result[]
@@ -1007,7 +1109,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
                                    a in ("density", "j", "current") ? "Current density" :
                                    a in ("z", "impedance") ? "SI impedance" : a in ("target", "targets") ? "SI vs target" :
                                    a in ("ref", "reference") ? "SI reference" : "Off"
-                request!(st, :results)
+                request!(st, :analysis)
             elseif cmd == "rail"
                 res = st.result[]
                 (res === nothing || !res.ok) && return say("Run the DC analysis first.")
@@ -1016,7 +1118,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
                 n === nothing && return say("'$(rest[1])' is not a simulated net. Choices: $(join(voltage_rails(res), ", "))")
                 st.result_net[] = res.nets[n]
                 st.result_mode[] = "Voltage"
-                request!(st, :results)
+                request!(st, :analysis)
             elseif cmd == "dcset"
                 keys_ = [k for (k, _, _, _) in DC_SETTING_SPECS]
                 (length(rest) < 2 || !(rest[1] in keys_)) && return say("Usage: dcset <$(join(keys_, "|"))> <value>")
@@ -1080,6 +1182,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     unfilled > 0 && say("NOTE: $unfilled pour(s) have no fill data and are drawn as boundaries only.")
     isfile(rpath) && say("NOTE: unsaved changes from a previous session were found. Type 'recover' to load them.")
 
+    fit_layout!()
     update_title()
     refresh_browser!(false)
     rebuild!(build_leftfoot!, leftfoot)
@@ -1091,11 +1194,17 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         screen = display(GLMakie.Screen(; title = "PerplexForge $version · " * boardname), fig)
         screen_ref[] = screen
         set_window_icon!(screen)
+        set_dock_icon!(asset_path("macos", "icon_1024.png"))
+        try                                                # below this the layout can't fit
+            GLMakie.GLFW.SetWindowSizeLimits(screen.glscreen, 960, 600, GLMakie.GLFW.DONT_CARE, GLMakie.GLFW.DONT_CARE)
+        catch
+        end
         set_view!(bs, :iso)
     else
         set_view!(bs, :iso)
     end
     ui = (; fig, state = st, scene = bs, console, flush! = flush_ui!, check! = run_check!, dc! = run_dc!, ac! = run_ac!, si! = run_si!, report! = run_report!,
+          select! = select_analysis!,
           tabs_bottom = tabs_b, zpanel, save! = do_save!,
           exec = exec, tabs_left = tabs_l, tabs_right = tabs_r, splitters, screen)
     block && screen !== nothing && wait(screen)

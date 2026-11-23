@@ -102,6 +102,7 @@ def main():
         for sub in ("src", "bin"):
             add_tree(z, os.path.join(ROOT, sub), f"plugins/julia/{sub}")
         add_tree(z, os.path.join(ROOT, "assets", "icons"), "plugins/julia/assets/icons")
+        add_tree(z, os.path.join(ROOT, "assets", "macos"), "plugins/julia/assets/macos")
         install_size = sum(i.file_size for i in z.infolist())
     data = buf.getvalue()
     os.makedirs(os.path.join(ROOT, "dist"), exist_ok=True)

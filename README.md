@@ -65,15 +65,16 @@ If the button does nothing, look at `~/Documents/KiCad/10.0/plugins/perplexforge
 
 </details>
 
-The version you're running is shown in the window title and the top bar, e.g. `v0.1.0`.
+The version you're running is shown in the window title and the top bar, e.g. `v0.1.0`. On macOS the Dock shows the PerplexForge icon while the workbench is open.
 
 ## Using it
 
 1. Save the board in KiCad and refill zones (**B**). PerplexForge reads the saved file.
-2. **Nets** tab: check the power/ground classes (they're guessed from net names). Ground and power pours are the reference planes for signal integrity.
-3. Power integrity: click a part (in 3D or in the **Components** list) and **+ Add** an element: a VRM on the regulator or its output inductor, a sink on each load, and capacitors for AC. Then **▶ Run DC analysis** or **▶ Run AC sweep**. Results appear in the **Power** tab, on the copper in 3D, and (for AC) in the **PDN impedance** tab below the view.
-4. Signal integrity: **▶ Run SI analysis** needs no setup. Results appear in the **Signals** tab, on the traces in 3D (coloured by impedance, by target, or by reference type) and in the **Signals** tables below the view. Click a finding to highlight it. Add impedance targets in the Signals tab (or `target *CLK* 50`), and length-match groups with `group add DDR_DQ 0.5 DQ*`.
-5. **Report** writes the HTML report; **Save** stores the setup next to the board.
+2. **Nets** tab: check the power/ground classes (they're guessed from net names). Ground and power pours are also the reference planes for signal integrity.
+3. **Analysis** tab: pick the simulation source, **Power integrity** (then **DC · IR drop** or **AC · PDN impedance**) or **Signal integrity**. Each analysis shows its **Configuration**, its own **▶ Run** button, what it draws on the copper, and its results.
+   - Power integrity: click a part (in 3D or in the **Components** list) and **+ Add** an element in the Inspector: a VRM on the regulator or its output inductor, a sink on each load, and capacitors for AC. AC curves appear in the **PDN impedance** tab below the view.
+   - Signal integrity needs no setup. Traces are coloured by impedance, by target or by reference type, and the **Signals** tables below the view list nets, pairs, cross-sections and findings. Click a finding to highlight it. Add impedance targets in the configuration (or `target *CLK* 50`) and length-match groups with `group add DDR_DQ 0.5 DQ*`.
+4. **Report** writes the HTML report; **Save** stores the setup next to the board. The camera presets and an overlay switcher are in the toolbar above the 3D view.
 
 Type `help` in the console for keyboard-friendly commands.
 

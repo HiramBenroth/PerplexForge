@@ -1,7 +1,8 @@
 module ResultsPanel
 
-# Right-dock "Power" tab: what is drawn on the copper (overlay + colour bar), DC results,
-# AC (PDN impedance) results, and the DC / AC settings.
+# Power-integrity analyses in the Analysis tab: DC (IR drop) and AC (PDN impedance), each
+# with its configuration, run button, results and copper overlay; plus shared pieces
+# (settings grid, collapsible configuration header, overlay section) used by SI too.
 
 using GLMakie
 using Printf
@@ -11,7 +12,8 @@ using ..Widgets
 using ..DCSolver
 using ..ACSolver
 
-export build_results_panel!, OVERLAY_MODES, settings_grid!, wrap
+export dc_panel!, ac_panel!, overlay_section!, config_header!, title!, run_button!, OVERLAY_MODES, DC_MODES, AC_MODES,
+       DC_COLOR, AC_COLOR, settings_grid!, wrap
 
 const OVERLAY_MODES = ["Off", "Voltage", "IR drop", "Current density", AC_MODE, SI_MODES...]
 const DIM = RGBf(0.55, 0.55, 0.60)
@@ -72,27 +74,51 @@ function settings_grid!(p, st, h, r, specs, dict, defaults, tag)
             dict[key] = x
             changed!(st)
             st.say("$tag $label = $(format_si(x, unit)) (run again to apply)")
-            request!(st, :results)
+            request!(st, :analysis)
         end
     end
     colgap!(g, 6); rowgap!(g, 3)
     return r + 1
 end
 
-function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!::Function = () -> nothing)
-    h = p.host
-    r = 1
+"""
+Collapsible "Configuration" header. Expanded by default until the analysis has a result;
+the user's choice is remembered per analysis in the view settings. Returns (r, expanded).
+"""
+function config_header!(p, st, h, r, key::String, has_result::Bool, summary::String)
+    k = "config_open_" * key
+    open = get(st.setup.view, k, !has_result) == true
+    b = blk!(p, Button(h[r, 1:2]; label = (open ? "▾  Configuration" : "▸  Configuration") * (open || isempty(summary) ? "" : "  ·  " * summary),
+                       tellwidth = false, width = Relative(1), padding = (8, 8, 4, 4), fontsize = 12,
+                       buttoncolor = RGBf(0.17, 0.18, 0.23), labelcolor = RGBf(0.85, 0.87, 0.92)))
+    on(b.clicks) do _
+        st.setup.view[k] = !open
+        request!(st, :analysis)
+    end
+    return r + 1, open
+end
+
+"Analysis title and a one-line description."
+function title!(p, h, r, title, desc)
+    blk!(p, Label(h[r, 1:2], title; font = :bold, fontsize = 16, halign = :left, color = :white, tellwidth = false)); r += 1
+    blk!(p, Label(h[r, 1:2], desc; fontsize = 11, halign = :left, justification = :left, color = DIM, tellwidth = false))
+    return r + 1
+end
+
+"""
+"Show on the copper" for one analysis: an overlay menu limited to `modes`, a layer filter,
+the rail (DC voltage) and the colour bar.
+"""
+function overlay_section!(p, st, h, r, modes::Vector{String})
     res = st.result[]
     acr = st.ac_result[]
-    mode = st.result_mode[]
-
-    # ── what is drawn on the copper ──────────────────────────────────────────
+    mode = st.result_mode[] in modes ? st.result_mode[] : "Off"
     section!(p, h, r, "ON THE COPPER"); r += 1
     g = sub!(p, h[r, 1:2]); r += 1
     blk!(p, Label(g[1, 1], "Show"; halign = :left, width = 50))
-    m = blk!(p, Menu(g[1, 2]; options = OVERLAY_MODES, default = mode, tellwidth = false, width = Relative(1)))
+    m = blk!(p, Menu(g[1, 2]; options = vcat(["Off"], modes), default = mode, tellwidth = false, width = Relative(1)))
     on(m.selection) do s
-        s === nothing || s == st.result_mode[] || (st.result_mode[] = s; request!(st, :results))
+        s === nothing || s == st.result_mode[] || (st.result_mode[] = s; request!(st, :analysis))
     end
     on_now = [n for n in st.layer_names if st.layer_on[n][]]
     blk!(p, Label(g[2, 1], "Layer"; halign = :left, width = 50))
@@ -110,7 +136,7 @@ function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!:
         blk!(p, Label(g[3, 1], "Rail"; halign = :left, width = 50))
         rm = blk!(p, Menu(g[3, 2]; options = voltage_rails(res), default = rail, tellwidth = false, width = Relative(1)))
         on(rm.selection) do s
-            s === nothing || s == st.result_net[] || (st.result_net[] = s; request!(st, :results))
+            s === nothing || s == st.result_net[] || (st.result_net[] = s; request!(st, :analysis))
         end
     end
     rowgap!(g, 4)
@@ -134,11 +160,9 @@ function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!:
         _, (lo, hi) = ac_map(acr, clamp(st.ac_port[], 1, length(acr.ports)), st.ac_freq[])
         cb = ((lo, hi), "|V| per A into $(port.id) at $(format_si(st.ac_freq[], "Hz")) (Ω)",
               vs -> [format_si(v, "") for v in vs])
-    elseif is_si_mode(mode)
-        line!(p, h, r, "Signal-integrity overlay: its colour key is in the Signals tab."; color = DIM, fontsize = 11); r += 1
     elseif mode != "Off"
-        line!(p, h, r, mode == AC_MODE ? "Run the AC sweep, then click a frequency on the PDN impedance plot." :
-                                         "Run the DC analysis to see this."; color = DIM, fontsize = 11); r += 1
+        line!(p, h, r, mode == AC_MODE ? "Click a frequency on the PDN impedance plot (bottom) to map |V| at it." :
+                                         "Run the analysis to see this."; color = DIM, fontsize = 11); r += 1
     end
     if cb !== nothing
         (lims, label, fmt) = cb
@@ -146,12 +170,45 @@ function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!:
                          height = 10, label = label, tickformat = fmt, labelsize = 12, ticklabelsize = 11,
                          tellwidth = false)); r += 1
     end
+    return r
+end
 
-    # ── DC ───────────────────────────────────────────────────────────────────
-    section!(p, h, r, "DC ANALYSIS"); r += 1
-    r = run_button!(p, h, r, "▶  Run DC analysis", RGBf(0.13, 0.50, 0.27), run!)
+const DC_MODES = ["Voltage", "IR drop", "Current density"]
+const AC_MODES = [AC_MODE]
+const DC_COLOR = RGBf(0.13, 0.50, 0.27)
+const AC_COLOR = RGBf(0.15, 0.35, 0.60)
+
+"DC (IR drop): configuration, run, results, overlay."
+function dc_panel!(p::DynPanel, st::UIState, h, r; run!::Function, maxrows::Int = 30)
+    res = st.result[]
+    r = title!(p, h, r, "DC · IR drop", "Voltage, IR drop and current density of the power nets for the loads you define.")
+    errs, warns, summary = validate_dc(st.setup, st.board)
+    nv = count(e -> e.kind == :vrm, st.setup.elements); ns = count(e -> e.kind == :sink, st.setup.elements)
+    np = count(e -> e.kind in (:resistor, :inductor, :ferrite, :short), st.setup.elements)
+    sumtxt = "$nv VRM, $ns sink$(ns == 1 ? "" : "s"), $np series" * (isempty(errs) ? "" : " · $(length(errs)) problem(s)")
+    r, open = config_header!(p, st, h, r, "dc", res !== nothing, sumtxt)
+    if open
+        line!(p, h, r, "Sources and loads: select a part (3D or Components) and add a VRM,\nsink or series element in the Inspector. " *
+                       "Ground / power nets: Nets tab."; color = DIM, fontsize = 11); r += 1
+        line!(p, h, r, sumtxt; fontsize = 12); r += 1
+        for l in first(summary, 4)
+            line!(p, h, r, wrap("• " * l, 60); fontsize = 11); r += 1
+        end
+        for e in first(errs, 3)
+            line!(p, h, r, wrap("✗ " * e, 60); color = BAD_C, fontsize = 11); r += 1
+        end
+        for w in first(warns, 2)
+            line!(p, h, r, wrap("! " * w, 60); color = WARN_C, fontsize = 11); r += 1
+        end
+        r = settings_grid!(p, st, h, r, DC_SETTING_SPECS, st.setup.dc, DCSettings(), "[dc]")
+    end
+    r = run_button!(p, h, r, "▶  Run DC analysis", DC_COLOR, run!)
+    r = overlay_section!(p, st, h, r, DC_MODES)
+    nlist = max(3, maxrows - r - 6)                         # rows left for the result lists
+
+    section!(p, h, r, "RESULTS"); r += 1
     if res === nothing
-        line!(p, h, r, "Not run yet. Add a VRM and sinks (Inspector), then Run."; color = DIM); r += 1
+        line!(p, h, r, "Not run yet."; color = DIM); r += 1
     elseif !res.ok
         line!(p, h, r, "The last run failed:"; color = BAD_C); r += 1
         for msg in first(res.messages, 6)
@@ -161,7 +218,7 @@ function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!:
         st.result_rev != st.rev[] && (line!(p, h, r, "Setup changed since this run: run again to update."; color = WARN_C); r += 1)
         line!(p, h, r, @sprintf("%d nodes · cell %.3f mm · %.2f s · copper loss %s", res.nnodes, res.grid.h, res.seconds,
                                 format_si(res.ploss, "W")); color = DIM, fontsize = 11); r += 1
-        for s in first(sort(res.sinks; by = s -> -s.pct), 8)
+        for s in first(sort(res.sinks; by = s -> -s.pct), min(8, nlist))
             r = row_button!(p, st, h, r, @sprintf("%s  %s  %s   %.5f V   −%.2f mV (%.2f%%)", s.id, s.ref, s.net_pos,
                                                   s.v, s.drop_mV, s.pct), severity(s.pct), s.id)
         end
@@ -169,7 +226,7 @@ function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!:
             r = row_button!(p, st, h, r, @sprintf("%s  %s  %s   %s   %.5f V at pads", t.id, t.ref, t.net_pos,
                                                   format_si(t.I, "A"), t.vout), KIND_COLORS[:vrm], t.id)
         end
-        for s in first(sort(res.series; by = s -> -abs(s.I)), 6)
+        for s in first(sort(res.series; by = s -> -abs(s.I)), clamp(nlist - 8, 0, 6))
             r = row_button!(p, st, h, r, @sprintf("%s  %s → %s   %s   %s across", s.id, s.net_pos, s.net_neg,
                                                   format_si(abs(s.I), "A"), format_si(abs(s.vdrop), "V")),
                             KIND_COLORS[s.kind], s.id)
@@ -193,12 +250,29 @@ function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!:
             line!(p, h, r, wrap("• " * msg); color = DIM, fontsize = 11); r += 1
         end
     end
+    return r
+end
 
-    # ── AC ───────────────────────────────────────────────────────────────────
-    section!(p, h, r, "AC ANALYSIS (PDN IMPEDANCE)"); r += 1
-    r = run_button!(p, h, r, "▶  Run AC sweep", RGBf(0.15, 0.35, 0.60), run_ac!)
+"AC (PDN impedance): configuration, run, results, overlay."
+function ac_panel!(p::DynPanel, st::UIState, h, r; run!::Function, maxrows::Int = 30)
+    acr = st.ac_result[]
+    r = title!(p, h, r, "AC · PDN impedance", "|Z(f)| seen by every sink (port) with its decoupling, against a target impedance.")
+    ns = count(e -> e.kind == :sink, st.setup.elements); nc = count(e -> e.kind == :capacitor, st.setup.elements)
+    sumtxt = "$ns port$(ns == 1 ? "" : "s"), $nc capacitor$(nc == 1 ? "" : "s")"
+    r, open = config_header!(p, st, h, r, "ac", acr !== nothing, sumtxt)
+    if open
+        line!(p, h, r, "Every sink is a port; its target comes from its load step and allowed\nripple. Add decoupling capacitors as elements " *
+                       "(Inspector)."; color = DIM, fontsize = 11); r += 1
+        line!(p, h, r, sumtxt; fontsize = 12); r += 1
+        r = settings_grid!(p, st, h, r, AC_SETTING_SPECS, st.setup.ac, ACSettings(), "[ac]")
+    end
+    r = run_button!(p, h, r, "▶  Run AC sweep", AC_COLOR, run!)
+    r = overlay_section!(p, st, h, r, AC_MODES)
+    nlist = max(3, maxrows - r - 5)
+
+    section!(p, h, r, "RESULTS"); r += 1
     if acr === nothing
-        line!(p, h, r, "Not run yet. Every sink is a port; add your decoupling\ncapacitors as elements, then Run."; color = DIM); r += 1
+        line!(p, h, r, "Not run yet."; color = DIM); r += 1
     elseif !acr.ok
         for msg in first(acr.messages, 4)
             line!(p, h, r, wrap("• " * msg); color = BAD_C, fontsize = 11); r += 1
@@ -207,7 +281,7 @@ function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!:
         st.ac_rev != st.rev[] && (line!(p, h, r, "Setup changed since this sweep: run again to update."; color = WARN_C); r += 1)
         line!(p, h, r, @sprintf("%d points · %d nodes · %.1f s · plane C %s", length(acr.freqs), acr.nnodes, acr.seconds,
                                 format_si(acr.cplane, "F")); color = DIM, fontsize = 11); r += 1
-        for port in acr.ports
+        for port in first(acr.ports, nlist)
             mag = abs.(port.Z)
             ip = argmax(mag)
             bands = target_violations(acr.freqs, port.Z, port.target)
@@ -220,18 +294,12 @@ function build_results_panel!(p::DynPanel, st::UIState; run!::Function, run_ac!:
                       fontsize = 11); r += 1
             end
         end
+        line!(p, h, r, "|Z(f)| curves: PDN impedance tab (bottom)."; color = DIM, fontsize = 11); r += 1
         for msg in first(acr.messages, 3)
             line!(p, h, r, wrap("• " * msg); color = DIM, fontsize = 11); r += 1
         end
     end
-
-    # ── settings ─────────────────────────────────────────────────────────────
-    section!(p, h, r, "DC SETTINGS"); r += 1
-    r = settings_grid!(p, st, h, r, DC_SETTING_SPECS, st.setup.dc, DCSettings(), "[dc]")
-    section!(p, h, r, "AC SETTINGS"); r += 1
-    r = settings_grid!(p, st, h, r, AC_SETTING_SPECS, st.setup.ac, ACSettings(), "[ac]")
-    rowgap!(h, 4)
-    return p
+    return r
 end
 
 end # module
