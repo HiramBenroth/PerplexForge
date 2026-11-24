@@ -158,11 +158,7 @@ if ($sac -eq 1) {
     Info "Smart App Control is on: Julia will run without package images (no compiled DLLs; slower start)."
     $jflags += "--pkgimages=no"
 }
-# Compile only what PerplexForge loads (not every package in the environment): optional ones
-# like OpenEXR ship DLLs that Smart App Control may block, and PerplexForge never uses them.
-$env:JULIA_PKG_PRECOMPILE_AUTO = "0"
-& $julia @jflags --project="$dest\julia" -e 'using Pkg; Pkg.instantiate(); @eval using PerplexForge'
-Remove-Item Env:JULIA_PKG_PRECOMPILE_AUTO -ErrorAction SilentlyContinue
+& $julia @jflags --project="$dest\julia" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 if ($LASTEXITCODE) { Fail "Installing the Julia packages failed (see above). Check your internet connection and run this again." }
 
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
