@@ -409,9 +409,11 @@ function overlay_range(r::DCResult, mode::AbstractString; net::AbstractString = 
         end
         # current crowds at pins / vias: clip the extreme tail of the copper cells, but never
         # below the traces. Shown on a log scale over three decades (planes, traces and pins at once).
-        cells = sort!(vals)
+        cells = sort!(filter(isfinite, vals))
         hi = isempty(cells) ? 1f0 : cells[clamp(ceil(Int, 0.995 * length(cells)), 1, length(cells))]
-        isempty(r.traces) || (hi = max(hi, Float32(maximum(t.J for t in r.traces))))
+        # traces in copper islands left out of the solve have no current (NaN): skip them
+        tj = Float32[t.J for t in r.traces if isfinite(t.J)]
+        isempty(tj) || (hi = max(hi, maximum(tj)))
         hi = max(hi, 1f-6)
         return (hi / 1000f0, hi)
     end

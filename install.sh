@@ -87,10 +87,26 @@ if [ -n "$DEV" ]; then
     cp "$SRC/Project.toml" "$SRC/LICENSE" "$TMP/pkg/plugins/julia/"
     cp -R "$SRC/src" "$SRC/bin" "$TMP/pkg/plugins/julia/"
     for d in icons macos; do [ -d "$SRC/assets/$d" ] && cp -R "$SRC/assets/$d" "$TMP/pkg/plugins/julia/assets/"; done
-    printf '%s' "${SHA:0:7}" > "$TMP/pkg/plugins/julia/DEV_COMMIT"
-    PV="$(sed -nE 's/^version = "(.*)"/\1/p' "$TMP/pkg/plugins/julia/Project.toml" | head -1)"
-    TAG="v$PV-dev (${SHA:0:7})"
-    info "$TAG"
+    # name the build after the last release plus a letter per commit since: v0.2.0a, v0.2.0b, …
+    TAG=""
+    REL_URL="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$OWNER/$REPO/releases/latest" || true)"
+    REL="${REL_URL##*/}"
+    if [ "${REL#v}" != "$REL" ]; then
+        CMP="$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/compare/$REL...$SHA" || true)"
+        N="$(printf '%s\n' "$CMP" | sed -nE 's/.*"ahead_by": *([0-9]+).*/\1/p' | head -1)"
+        if [ -n "$N" ]; then
+            L=""
+            while [ "$N" -gt 0 ]; do
+                N=$((N - 1)); L="$(printf "\\$(printf '%03o' $((97 + N % 26)))")$L"; N=$((N / 26))
+            done
+            TAG="$REL$L"
+        fi
+    fi
+    if [ -z "$TAG" ]; then
+        TAG="v$(sed -nE 's/^version = "(.*)"/\1/p' "$TMP/pkg/plugins/julia/Project.toml" | head -1)-dev"
+    fi
+    printf '%s %s' "$TAG" "${SHA:0:7}" > "$TMP/pkg/plugins/julia/DEV_VERSION"
+    info "$TAG (commit ${SHA:0:7})"
 else
     step "Downloading the latest PerplexForge release"
     # github.com/<owner>/<repo>/releases/latest redirects to .../releases/tag/vX.Y.Z

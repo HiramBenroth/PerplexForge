@@ -396,8 +396,10 @@ function validate_dc(s::SimSetup, board::BoardData)
         rs = [e for e in sinks if e.net_pos == r]
         total = sum(e.params["I"] for e in rs; init = 0.0)
         src = isempty(rv) ? "NO VRM" : join(["VRM $(e.ref) " * format_si(e.params["V"], "V") for e in rv], ", ")
-        lds = isempty(rs) ? "no sinks" : "sinks " * join(["$(e.ref) " * format_si(e.params["I"], "A") for e in rs], ", ")
-        push!(summary, "$r: $src | $lds | total " * format_si(total, "A"))
+        ser = [e for e in s.elements if KIND_SPECS[e.kind].group == :passive && e.kind != :capacitor && (e.net_pos == r || e.net_neg == r)]
+        lds = !isempty(rs) ? "sinks " * join(["$(e.ref) " * format_si(e.params["I"], "A") for e in rs], ", ") :
+              !isempty(ser) ? "loads through " * join([e.id for e in ser], ", ") * " (current from the solve)" : "no loads"
+        push!(summary, "$r: $src | $lds" * (isempty(rs) ? "" : " | total " * format_si(total, "A")))
         isempty(rv) && !isempty(rs) && push!(errors, "Rail $r has sinks but no VRM.")
         length(rv) > 1 && push!(warnings, "Rail $r has $(length(rv)) VRMs (parallel sources).")
     end

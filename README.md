@@ -57,7 +57,7 @@ If the button does nothing, look at `~/Documents/KiCad/10.0/plugins/perplexforge
 
 ### Development builds
 
-To test what's being worked on (the latest commit on the `dev` branch) on your real projects, install the development build instead. It installs into KiCad exactly like a release, and the window title shows which commit you're on, e.g. `v0.2.0-dev (abc1234)`.
+To test what's being worked on (the latest commit on the `dev` branch) on your real projects, install the development build instead. It installs into KiCad exactly like a release. Dev builds are named after the last release plus a letter for each commit since, so after `v0.2.0` come `v0.2.0a`, `v0.2.0b`, … (the commit is shown in the console).
 
 Windows (PowerShell):
 

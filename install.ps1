@@ -81,10 +81,26 @@ if ($Dev) {
         $a = Join-Path $srcDir.FullName "assets\$d"
         if (Test-Path $a) { Copy-Item $a (Join-Path $pkgPlugins "julia\assets") -Recurse }
     }
-    Set-Content -Path (Join-Path $pkgPlugins "julia\DEV_COMMIT") -Value $sha.Substring(0, 7) -NoNewline
-    $pv = (Select-String -Path (Join-Path $pkgPlugins "julia\Project.toml") -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
-    $label = "v$($pv)-dev ($($sha.Substring(0, 7)))"
-    Info "$label  $($commit.commit.message.Split("`n")[0])"
+    # name the build after the last release plus a letter per commit since: v0.2.0a, v0.2.0b, …
+    $short = $sha.Substring(0, 7)
+    $label = $null
+    try {
+        $tag = (Invoke-RestMethod "https://api.github.com/repos/$Owner/$Repo/releases/latest" -Headers $hdr).tag_name
+        $n = [int](Invoke-RestMethod "https://api.github.com/repos/$Owner/$Repo/compare/$tag...$sha" -Headers $hdr).ahead_by
+        $letters = ""
+        while ($n -gt 0) {
+            $n = $n - 1
+            $letters = [string][char](97 + ($n % 26)) + $letters
+            $n = [int][math]::Floor($n / 26)
+        }
+        $label = "$tag$letters"
+    } catch { }
+    if (-not $label) {
+        $pv = (Select-String -Path (Join-Path $pkgPlugins "julia\Project.toml") -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+        $label = "v$($pv)-dev"
+    }
+    Set-Content -Path (Join-Path $pkgPlugins "julia\DEV_VERSION") -Value "$label $short" -NoNewline
+    Info "$label (commit $short)  $($commit.commit.message.Split("`n")[0])"
 } else {
     Step "Downloading the latest PerplexForge release"
     $rel = Invoke-RestMethod "https://api.github.com/repos/$Owner/$Repo/releases/latest" -Headers $hdr

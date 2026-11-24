@@ -232,6 +232,13 @@ end
     sd = only(x for x in r.series if x.kind == :diode)
     @test isapprox(sd.I, I; rtol = 2e-3) && isapprox(sd.vdrop, 2.0; atol = 1e-3)
     @test all(t -> isapprox(abs(t.I), I; rtol = 2e-3), r.traces)
+    # a stray island of a simulated net (not connected to the VRM) must not break the overlay scale
+    push!(b.traces, T(25, 9, 28, 9, "N1"))
+    ri = solve_dc(b, s)
+    lo, hi = overlay_range(ri, "Current density")
+    @test isfinite(lo) && isfinite(hi) && hi > lo > 0
+    @test any(t -> isnan(t.J), ri.traces) && hi >= maximum(t.J for t in ri.traces if isfinite(t.J))
+    pop!(b.traces)
     # the LED fitted backwards conducts nothing, and the solver says why
     d.net_pos, d.net_neg = "N2", "N1"
     r2 = solve_dc(b, s)

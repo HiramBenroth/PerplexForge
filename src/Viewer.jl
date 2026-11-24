@@ -158,7 +158,7 @@ successful DC setup check. With `show = false` nothing is displayed (used for
 snapshots); the returned named tuple gives access to the figure, state and helpers.
 """
 function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing, startup_log = String[],
-                       block::Bool = false, show::Bool = true, version::AbstractString = "")
+                       block::Bool = false, show::Bool = true, version::AbstractString = "", commit::AbstractString = "")
     println("[viewer] Building geometry...")
     layers, unfilled = build_layers(board)
     zcu, slabs, diel_defined = stack_geometry(board, layers)
@@ -1196,7 +1196,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     end
 
     # ── startup ──────────────────────────────────────────────────────────────
-    say("PerplexForge $version workbench ready.")
+    say("PerplexForge $version workbench ready." * (isempty(commit) ? "" : "  Development build, commit $commit."))
     foreach(l -> say(l), startup_log)
     say("Type 'help' for commands.  Left-drag orbit · right-drag pan · scroll zoom · click to select.")
     unfilled > 0 && say("NOTE: $unfilled pour(s) have no fill data and are drawn as boundaries only.")
