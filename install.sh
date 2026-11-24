@@ -151,7 +151,8 @@ fi
 
 # -- 5. Julia packages --------------------------------------------------------
 step "Installing PerplexForge's Julia packages (several minutes, once)"
-"$JULIA" --startup-file=no --project="$DEST/julia" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()' </dev/null \
+# compile only what PerplexForge loads, not every package in the environment
+JULIA_PKG_PRECOMPILE_AUTO=0 "$JULIA" --startup-file=no --project="$DEST/julia" -e 'using Pkg; Pkg.instantiate(); @eval using PerplexForge' </dev/null \
     || fail "Installing the Julia packages failed (see above). Check your internet connection and run this again."
 
 printf '\n\033[32mPerplexForge %s is installed.\033[0m\n' "$TAG"

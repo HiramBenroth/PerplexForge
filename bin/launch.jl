@@ -42,8 +42,12 @@ if !deps_ready()
     println("[setup  ] This happens once and takes several minutes; later starts are much faster.")
     println()
     try
-        Pkg.instantiate()
-        Pkg.precompile()
+        # Install, but don't precompile the whole environment: only what PerplexForge loads gets
+        # compiled (by `using PerplexForge` below). Some optional packages carry unsigned DLLs
+        # (e.g. OpenEXR, pulled in for .exr images) that Windows Smart App Control blocks.
+        withenv("JULIA_PKG_PRECOMPILE_AUTO" => "0") do
+            Pkg.instantiate()
+        end
     catch err
         showerror(stdout, err)
         pause_before_exit("Installing the Julia packages failed (see above). Check your internet connection and try again.")
