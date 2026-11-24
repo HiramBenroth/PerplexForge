@@ -72,8 +72,10 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/perplexforge.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 if [ -n "$DEV" ]; then
     step "Downloading the latest development build (dev branch)"
-    SHA="$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/commits/dev" | grep -m1 '"sha"' | sed -E 's/.*"sha": *"([0-9a-f]+)".*/\1/')" \
+    # download first, then parse (piping curl into `grep -m1` can kill curl with SIGPIPE under pipefail)
+    API="$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/commits/dev")" \
         || fail "could not reach GitHub. Check your internet connection and run this again."
+    SHA="$(printf '%s\n' "$API" | sed -nE 's/.*"sha": *"([0-9a-f]{40})".*/\1/p' | head -1)"
     [ ${#SHA} -ge 7 ] || fail "could not find the dev branch on GitHub."
     curl -fsSL -o "$TMP/dev.zip" "https://github.com/$OWNER/$REPO/archive/$SHA.zip" \
         || fail "downloading the dev branch failed. Check your internet connection and run this again."
