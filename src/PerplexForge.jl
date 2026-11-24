@@ -45,13 +45,17 @@ const VERSION_TEXT = Ref("")
 """
     version_text() -> String
 
-"v0.1.0" for an installed release; "v0.1.0-dev (abc1234)" when running from a git
-checkout (the development copy), so the two are easy to tell apart.
+"v0.1.0" for an installed release; "v0.1.0-dev (abc1234)" for a dev-channel install or a
+git checkout (the development copy), so the two are easy to tell apart.
 """
 function version_text()
     isempty(VERSION_TEXT[]) || return VERSION_TEXT[]
     v = "v" * string(something(pkgversion(@__MODULE__), v"0.0.0"))
-    if isdir(joinpath(ROOT, ".git"))
+    devfile = joinpath(ROOT, "DEV_COMMIT")                 # written by the dev-channel installers
+    if isfile(devfile)
+        sha = strip(read(devfile, String))
+        v *= "-dev" * (isempty(sha) ? "" : " ($sha)")
+    elseif isdir(joinpath(ROOT, ".git"))
         sha = try
             readchomp(pipeline(`git -C $ROOT rev-parse --short HEAD`; stderr = devnull))
         catch

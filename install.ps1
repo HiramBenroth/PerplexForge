@@ -2,6 +2,10 @@
 #
 #   irm https://raw.githubusercontent.com/HiramBenroth/PerplexForge/main/install.ps1 | iex
 #
+# Development builds (the latest commit on the dev branch, for testing):
+#
+#   irm https://raw.githubusercontent.com/HiramBenroth/PerplexForge/dev/install-dev.ps1 | iex
+#
 # What it does (run it again any time to update to the latest release):
 #   1. installs Julia (via juliaup) if it is missing or too old
 #   2. downloads the latest PerplexForge release and installs it into KiCad's plugin folder
@@ -18,7 +22,8 @@ function Step($m) { Write-Host ""; Write-Host "==> $m" -ForegroundColor Cyan }
 function Info($m) { Write-Host "    $m" }
 function Fail($m) { Write-Host ""; Write-Host "PerplexForge was not installed: $m" -ForegroundColor Red; throw $m }
 
-Write-Host "PerplexForge installer" -ForegroundColor Green
+$Dev = $env:PF_CHANNEL -eq "dev"
+Write-Host ("PerplexForge installer" + $(if ($Dev) { "  (development build from the dev branch)" } else { "" })) -ForegroundColor Green
 
 # -- 0. KiCad -----------------------------------------------------------------
 $kicadCfg = Join-Path $env:APPDATA "kicad\10.0"
@@ -54,17 +59,43 @@ if ($ok -ne "true") {
 }
 Info ("Julia " + (& $julia --startup-file=no -e 'print(VERSION)'))
 
-# -- 2. Latest release --------------------------------------------------------
-Step "Downloading the latest PerplexForge release"
-$rel = Invoke-RestMethod "https://api.github.com/repos/$Owner/$Repo/releases/latest" -Headers @{ "User-Agent" = "PerplexForge-installer" }
-$asset = $rel.assets | Where-Object { $_.name -like "PerplexForge-*.zip" } | Select-Object -First 1
-if (-not $asset) { Fail "No release package found on GitHub." }
+# -- 2. Download --------------------------------------------------------------
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("perplexforge-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
-$zip = Join-Path $tmp $asset.name
-Invoke-WebRequest $asset.browser_download_url -OutFile $zip -Headers @{ "User-Agent" = "PerplexForge-installer" }
-Expand-Archive $zip (Join-Path $tmp "pkg")
-Info "$($rel.tag_name)  ($([math]::Round($asset.size / 1KB)) KB)"
+$hdr = @{ "User-Agent" = "PerplexForge-installer" }
+if ($Dev) {
+    Step "Downloading the latest development build (dev branch)"
+    $commit = Invoke-RestMethod "https://api.github.com/repos/$Owner/$Repo/commits/dev" -Headers $hdr
+    $sha = $commit.sha
+    $zip = Join-Path $tmp "dev.zip"
+    Invoke-WebRequest "https://github.com/$Owner/$Repo/archive/$sha.zip" -OutFile $zip -Headers $hdr
+    Expand-Archive $zip (Join-Path $tmp "src")
+    $srcDir = Get-ChildItem (Join-Path $tmp "src") -Directory | Select-Object -First 1
+    # lay it out like a release package: plugins\ = the KiCad plugin, plugins\julia\ = the Julia project
+    $pkgPlugins = Join-Path $tmp "pkg\plugins"
+    New-Item -ItemType Directory -Force -Path (Join-Path $pkgPlugins "julia\assets") | Out-Null
+    Copy-Item (Join-Path $srcDir.FullName "kicad_plugin\*") $pkgPlugins -Recurse
+    foreach ($f in "Project.toml", "LICENSE") { Copy-Item (Join-Path $srcDir.FullName $f) (Join-Path $pkgPlugins "julia") }
+    foreach ($d in "src", "bin") { Copy-Item (Join-Path $srcDir.FullName $d) (Join-Path $pkgPlugins "julia") -Recurse }
+    foreach ($d in "icons", "macos") {
+        $a = Join-Path $srcDir.FullName "assets\$d"
+        if (Test-Path $a) { Copy-Item $a (Join-Path $pkgPlugins "julia\assets") -Recurse }
+    }
+    Set-Content -Path (Join-Path $pkgPlugins "julia\DEV_COMMIT") -Value $sha.Substring(0, 7) -NoNewline
+    $pv = (Select-String -Path (Join-Path $pkgPlugins "julia\Project.toml") -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+    $label = "v$($pv)-dev ($($sha.Substring(0, 7)))"
+    Info "$label  $($commit.commit.message.Split("`n")[0])"
+} else {
+    Step "Downloading the latest PerplexForge release"
+    $rel = Invoke-RestMethod "https://api.github.com/repos/$Owner/$Repo/releases/latest" -Headers $hdr
+    $asset = $rel.assets | Where-Object { $_.name -like "PerplexForge-*.zip" } | Select-Object -First 1
+    if (-not $asset) { Fail "No release package found on GitHub." }
+    $zip = Join-Path $tmp $asset.name
+    Invoke-WebRequest $asset.browser_download_url -OutFile $zip -Headers $hdr
+    Expand-Archive $zip (Join-Path $tmp "pkg")
+    $label = $rel.tag_name
+    Info "$label  ($([math]::Round($asset.size / 1KB)) KB)"
+}
 
 # -- 3. Install into KiCad's plugin folder ------------------------------------
 Step "Installing into KiCad"
@@ -107,7 +138,7 @@ if ($LASTEXITCODE) { Fail "Installing the Julia packages failed (see above). Che
 
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ""
-Write-Host "PerplexForge $($rel.tag_name) is installed." -ForegroundColor Green
+Write-Host "PerplexForge $label is installed." -ForegroundColor Green
 Write-Host "Open a board in KiCad's PCB Editor and click the PerplexForge button on the toolbar."
 Write-Host "(The first click lets KiCad set up the plugin's Python environment; it needs internet once.)"
 Write-Host "If the button is missing: PCB Editor > Preferences > Plugins, and make sure PerplexForge is shown."
