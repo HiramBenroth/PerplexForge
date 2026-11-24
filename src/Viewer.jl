@@ -97,7 +97,7 @@ MIT licence · github.com/HiramBenroth/PerplexForge"""
 
 const KIND_ALIASES = Dict("vrm" => :vrm, "sink" => :sink, "load" => :sink, "r" => :resistor, "resistor" => :resistor,
                           "l" => :inductor, "inductor" => :inductor, "fb" => :ferrite, "ferrite" => :ferrite,
-                          "short" => :short, "0r" => :short, "jumper" => :short, "c" => :capacitor, "capacitor" => :capacitor)
+                          "short" => :short, "0r" => :short, "jumper" => :short, "d" => :diode, "diode" => :diode, "led" => :diode, "c" => :capacitor, "capacitor" => :capacitor)
 
 const CLASS_ALIASES = Dict("power" => :power, "pwr" => :power, "ground" => :ground, "gnd" => :ground,
                            "digital" => :digital, "dig" => :digital, "none" => :unspecified, "unspecified" => :unspecified)
@@ -109,7 +109,7 @@ Commands:
   net <name>      comp <ref>              select a net / component
   deselect
   class <net|pattern*> <power|ground|digital|none>   assign a net class
-  element add <kind> <REF> [+net] [-net] [P=value …] kinds: vrm sink r l fb short c
+  element add <kind> <REF> [+net] [-net] [P=value …] kinds: vrm sink r l fb short d c
   element rm <id>   |   element list
   check                                   validate the DC setup only
   dc  (or run)                            run the DC IR-drop analysis (same as the ▶ button)
@@ -709,7 +709,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         if res.ok
             select_analysis!(:pi, :dc)
             if isempty(res.sinks)
-                status.text[] = @sprintf("DC solved in %.1f s", res.seconds)
+                status.text[] = "DC: " * join(["$(t.id) supplies $(format_si(t.I, "A"))" for t in res.vrms], ", ") *
+                                @sprintf(" (%.1f s)", res.seconds)
             else
                 w = res.sinks[argmax([s.pct for s in res.sinks])]
                 status.text[] = @sprintf("DC: worst sink %s −%.2f mV (%.2f%%)", w.id, w.drop_mV, w.pct)
@@ -879,7 +880,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         if sub == "add"
             length(rest) < 3 && return say("Usage: element add <kind> <REF> [+net] [-net] [P=value …]")
             kind = get(KIND_ALIASES, lowercase(rest[2]), nothing)
-            kind === nothing && return say("Unknown kind '$(rest[2])'. Kinds: vrm sink r l fb short c")
+            kind === nothing && return say("Unknown kind '$(rest[2])'. Kinds: vrm sink r l fb short d c")
             c = get(st.comps, String(rest[3]), nothing)
             c === nothing && return say("No component '$(rest[3])'.")
             e = default_element(kind, c, st.setup)

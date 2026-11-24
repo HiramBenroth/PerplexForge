@@ -195,6 +195,50 @@ end
     @test r.sinks[1].drop_mV < (Rvia + 2 * RS * 26 / 4 + 0.002) * 1e3
 end
 
+@testset "DC: LED string with a resistor and a transistor switch (no sinks)" begin
+    # +3V3 ─ R1 (100 Ω) ─ N1 ─ D1 (LED, Vf 2 V) ─ N2 ─ Q1 (on: D–S) ─ GND, all on F.Cu traces
+    T(x0, y0, x1, y1, net) = BP.Trace(BP.Point(x0, y0), BP.Point(x1, y1), 0.5, "F.Cu", net)
+    comps = [part("U1", 2, 5, [pad("1", 0, -2, 1, 1, "+3V3"), pad("2", 0, 2, 1, 1, "GND")]),
+             part("R1", 10, 3, [pad("1", -1, 0, 1, 1, "+3V3"), pad("2", 1, 0, 1, 1, "N1")]; value = "100"),
+             part("D1", 16, 3, [pad("1", 1, 0, 1, 1, "N2"), pad("2", -1, 0, 1, 1, "N1")]; value = "LED_Red"),
+             part("Q1", 22, 5, [pad("1", -1, 0, 1, 1, "Net-(Q1-G)"), pad("2", 0, 2, 1, 1, "GND"), pad("3", 0, -2, 1, 1, "N2")])]
+    traces = [T(2, 3, 9, 3, "+3V3"), T(11, 3, 15, 3, "N1"), T(17, 3, 22, 3, "N2"), T(2, 7, 22, 7, "GND")]
+    nets = Set(["+3V3", "GND", "N1", "N2", "Net-(Q1-G)"])
+    b = BP.BoardData(30.0, 11.0, nets, comps, traces, BP.Via[], BP.Zone[], [vcat(rectpts(0, 0, 30, 11), [BP.Point(0, 0)])],
+                     BP.StackupLayer[])
+    s = new_setup("led.kicad_pcb", b)
+    byref = Dict(c.ref => c for c in comps)
+    @test guess_kind(byref["D1"], s) == :diode && guess_kind(byref["Q1"], s) == :short
+    d = default_element(:diode, byref["D1"], s)
+    @test d.net_pos == "N1" && d.net_neg == "N2"                 # anode = pin 2, cathode = pin 1
+    @test d.params["Vf"] == 2.0                                   # an LED
+    q = default_element(:short, byref["Q1"], s)
+    @test Set([q.net_pos, q.net_neg]) == Set(["N2", "GND"]) && q.net_neg == "GND"     # drain–source, not the gate
+
+    vrm = SimSetups.Element("VRM1", :vrm, "U1", "+3V3", "GND", Dict("V" => 3.3, "Rout" => 1e-6, "Lout" => 1e-9))
+    r1 = default_element(:resistor, byref["R1"], s)
+    push!(s.elements, vrm, r1)
+    # only the resistor: the diagnosis names the dead end and the part to model there
+    _, warns, _ = validate_dc(s, b)
+    @test any(w -> occursin("net N1 is only connected to R1", w) && occursin("D1", w), warns)
+    d.params["Rs"] = 1e-6
+    push!(s.elements, d, q)
+    _, warns, _ = validate_dc(s, b)
+    @test !any(w -> occursin("No current path", w) || occursin("Nothing draws", w), warns)
+    r = solve_dc(b, s)
+    @test r.ok
+    I = (3.3 - 2.0) / 100
+    @test isapprox(r.vrms[1].I, I; rtol = 2e-3)                   # traces add a few mΩ
+    sd = only(x for x in r.series if x.kind == :diode)
+    @test isapprox(sd.I, I; rtol = 2e-3) && isapprox(sd.vdrop, 2.0; atol = 1e-3)
+    @test all(t -> isapprox(abs(t.I), I; rtol = 2e-3), r.traces)
+    # the LED fitted backwards conducts nothing, and the solver says why
+    d.net_pos, d.net_neg = "N2", "N1"
+    r2 = solve_dc(b, s)
+    @test r2.ok && abs(r2.vrms[1].I) < 1e-6
+    @test any(m -> occursin("reverse-biased", m), r2.messages)
+end
+
 @testset "mesh: vias sharing a coarse cell still reach their planes" begin
     # A decoupling cap with a via in each pad; on a 3 mm grid both vias fall in one cell.
     # In1 is a +3V3 plane with a clearance hole around them, B.Cu a GND plane. The GND via

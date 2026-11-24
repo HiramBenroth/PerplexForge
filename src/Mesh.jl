@@ -21,7 +21,7 @@ export Grid, Mesh, build_mesh, cell_index, inbounds, fill_polygon!, BR_PLANE, BR
        BR_VRM, BR_SERIES, BR_CAP, SERIES_KINDS, G_TIE
 
 const BR_PLANE, BR_TRACE, BR_BARREL, BR_TIE, BR_VRM, BR_SERIES, BR_CAP = UInt8.(1:7)
-const SERIES_KINDS = (:resistor, :inductor, :ferrite, :short)
+const SERIES_KINDS = (:resistor, :inductor, :ferrite, :short, :diode)
 const G_TIE = 1e5                    # S: pin-to-pad tie (effectively ideal)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -501,7 +501,7 @@ function build_mesh(board::BoardData, setup::SimSetup; h::Float64 = 0.0, auto_di
         else
             A = terminal(e, e.net_pos, false); B = terminal(e, e.net_neg, false)
             (isempty(A) || isempty(B)) && continue
-            R = max(e.kind in (:resistor, :short) ? e.params["R"] : e.params["DCR"], 1e-6)
+            R = max(e.kind in (:resistor, :short) ? e.params["R"] : e.kind == :diode ? e.params["Rs"] : e.params["DCR"], 1e-6)
             ta, tb = hook!(e, A, B)
             bi = edge!(m, ta, tb, 1 / R, BR_SERIES; elem = ei)
             push!(m.series_t, (e = e, ta = ta, tb = tb, branch = bi))

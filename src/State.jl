@@ -27,11 +27,12 @@ const KIND_COLORS = Dict(
     :inductor  => RGBf(0.75, 0.65, 0.95),
     :ferrite   => RGBf(0.65, 0.55, 0.85),
     :short     => RGBf(0.70, 0.70, 0.70),
+    :diode     => RGBf(0.95, 0.85, 0.35),
     :capacitor => RGBf(0.45, 0.85, 0.95),
 )
 
 const KIND_TAGS = Dict(:vrm => "VRM", :sink => "SNK", :resistor => "R", :inductor => "L",
-                       :ferrite => "FB", :short => "0Ω", :capacitor => "C")
+                       :ferrite => "FB", :short => "0Ω", :diode => "D", :capacitor => "C")
 
 mutable struct UIState
     board::BoardData
