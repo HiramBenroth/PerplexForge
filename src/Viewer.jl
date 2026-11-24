@@ -34,16 +34,35 @@ asset_path(parts...) = joinpath(ASSETS, parts...)
 "PNG as a Matrix{RGBA} (rows top → bottom), or nothing."
 load_png(path) = isfile(path) ? (try GLMakie.Makie.PNGFiles.load(path) catch; nothing end) : nothing
 
-"Replace GLMakie's default window/taskbar icon with the PerplexForge icon set (all sizes in assets/icons)."
+"""
+Replace GLMakie's default window / taskbar icon (Windows, Linux) with the PerplexForge icon
+set (every size in assets/icons). Each PNG is loaded on its own, so one unreadable file
+can't drop the whole set. Returns a message on failure, nothing on success.
+"""
 function set_window_icon!(screen)
     dir = asset_path("icons")
-    isdir(dir) || return
-    try
-        icons = [GLMakie.Makie.load_icon(f) for f in readdir(dir; join = true) if endswith(f, ".png")]
-        isempty(icons) || GLMakie.GLFW.SetWindowIcon(screen.glscreen, icons)
-    catch err
-        @warn "Could not set the window icon" exception = err
+    isdir(dir) || return "icon folder missing: $dir"
+    icons = Matrix{NTuple{4,UInt8}}[]
+    bad = String[]
+    for f in readdir(dir; join = true)
+        endswith(f, ".png") || continue
+        try
+            # same layout as Makie.load_icon, but any PNG flavour (RGB, grey, 16-bit) is converted to 8-bit RGBA
+            C = GLMakie.Makie.Colors
+            img = convert(Matrix{C.RGBA{C.N0f8}}, GLMakie.Makie.PNGFiles.load(f))
+            push!(icons, collect(reinterpret(NTuple{4,UInt8}, img)))
+        catch err
+            push!(bad, basename(f) * ": " * sprint(showerror, err))
+        end
     end
+    isempty(icons) && return "no usable window icon" * (isempty(bad) ? "" : " (" * join(bad, "; ") * ")")
+    try
+        GLMakie.GLFW.SetWindowIcon(screen.glscreen, icons)
+    catch err
+        return "could not set the window icon: " * sprint(showerror, err)
+    end
+    isempty(bad) || return "some window icon sizes were skipped: " * join(bad, "; ")
+    return nothing
 end
 
 """
@@ -1194,7 +1213,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     if show
         screen = display(GLMakie.Screen(; title = "PerplexForge $version · " * boardname), fig)
         screen_ref[] = screen
-        set_window_icon!(screen)
+        msg = set_window_icon!(screen)
+        msg === nothing || say("NOTE: " * msg)
         set_dock_icon!(asset_path("macos", "icon_1024.png"))
         try                                                # below this the layout can't fit
             GLMakie.GLFW.SetWindowSizeLimits(screen.glscreen, 960, 600, GLMakie.GLFW.DONT_CARE, GLMakie.GLFW.DONT_CARE)
