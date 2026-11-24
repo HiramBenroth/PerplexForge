@@ -269,6 +269,8 @@ function solve_ac(board::BoardData, setup::SimSetup; settings::ACSettings = ac_s
                     max(p["ESR"], 1e-9) + im * ω * p["ESL"] + 1 / (im * ω * max(p["C"], 1e-18))
                 elseif kind2 in (:resistor, :short)
                     complex(max(p["R"], 1e-6))
+                elseif kind2 == :diode
+                    complex(max(p["Rs"], 1e-6))
                 else
                     max(p["DCR"], 1e-6) + im * ω * get(p, "L", 0.0)
                 end

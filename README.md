@@ -55,6 +55,24 @@ It does the same four steps as the Windows installer (Julia comes from the offic
 
 If the button does nothing, look at `~/Documents/KiCad/10.0/plugins/perplexforge/perplexforge_plugin.log`.
 
+### Development builds
+
+To test what's being worked on (the latest commit on the `dev` branch) on your real projects, install the development build instead. It installs into KiCad exactly like a release. Dev builds are named after the last release plus a letter for each commit since, so after `v0.2.0` come `v0.2.0a`, `v0.2.0b`, … (the commit is shown in the console).
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/HiramBenroth/PerplexForge/dev/install-dev.ps1 | iex
+```
+
+macOS (Terminal):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HiramBenroth/PerplexForge/dev/install.sh | bash -s -- --dev
+```
+
+Run the same command again to update to the newest dev commit. To go back to the released version, run the normal install command above.
+
 <details>
 <summary>Other ways to install</summary>
 

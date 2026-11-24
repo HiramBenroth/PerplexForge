@@ -132,16 +132,16 @@ function solve_dc(board::BoardData, setup::SimSetup; settings::DCSettings = dc_s
     end
 
     # sources: VRM Norton currents, sink draws
-    b = zeros(N)
+    b0 = zeros(N)
     for t in m.vrm_t
         R, V = max(t.e.params["Rout"], 1e-6), t.e.params["V"]
-        b[t.tp] += V / R
-        b[t.tn] -= V / R
+        b0[t.tp] += V / R
+        b0[t.tn] -= V / R
     end
     for t in sinks_used
         I = t.e.params["I"]
-        foreach(k -> (b[k] -= I / length(t.P)), t.P)
-        foreach(k -> (b[k] += I / length(t.N)), t.N)
+        foreach(k -> (b0[k] -= I / length(t.P)), t.P)
+        foreach(k -> (b0[k] += I / length(t.N)), t.N)
     end
     newidx = zeros(Int, N)
     nk = 0
@@ -156,43 +156,81 @@ function solve_dc(board::BoardData, setup::SimSetup; settings::DCSettings = dc_s
     end
     isempty(floating) || push!(msgs, "$(length(floating)) copper island(s) of the simulated nets are not connected to a VRM and were left out.")
 
-    Is = Int[]; Js = Int[]; Vs = Float64[]
-    sizehint!(Is, 4length(EA)); sizehint!(Js, 4length(EA)); sizehint!(Vs, 4length(EA))
-    for k in eachindex(EA)
-        gk = EG[k]
-        gk > 0 || continue
-        a, c = newidx[EA[k]], newidx[EB[k]]
-        a > 0 && (push!(Is, a); push!(Js, a); push!(Vs, gk))
-        c > 0 && (push!(Is, c); push!(Js, c); push!(Vs, gk))
-        if a > 0 && c > 0
-            push!(Is, a); push!(Js, c); push!(Vs, -gk)
-            push!(Is, c); push!(Js, a); push!(Vs, -gk)
-        end
-    end
-    A = sparse(Is, Js, Vs, nk, nk)
-    rhs = zeros(nk)
-    for k in 1:N
-        newidx[k] > 0 && (rhs[newidx[k]] = b[k])
-    end
-    log(@sprintf("[dc] %d unknowns (%d plane cells), %d conductances, built in %.2f s", nk, m.ngrid, length(EA), time() - t0))
-
-    t1 = time()
-    x = try
-        cholesky(Symmetric(A)) \ rhs
-    catch err
-        err isa PosDefException || rethrow()
-        push!(msgs, "Matrix not positive definite; used a general solver.")
-        A \ rhs
-    end
-    log(@sprintf("[dc] solved in %.2f s", time() - t1))
-
+    # Diodes: Vf in series with Rs while forward biased (a Norton source G·Vf), open when the
+    # solution reverse-biases them. Solve, flip the diodes whose state is wrong, repeat.
+    diodes = [t for t in m.series_t if t.e.kind == :diode]
+    G0 = Dict(t.branch => EG[t.branch] for t in diodes)
+    off = Dict(t.branch => false for t in diodes)
+    G_OFF = 1e-9
     v = fill(NaN, N)
-    for k in 1:N
-        newidx[k] > 0 && (v[k] = x[newidx[k]])
+    function solve_once()
+        b = copy(b0)
+        for t in diodes
+            if off[t.branch]
+                EG[t.branch] = G_OFF
+            else
+                EG[t.branch] = G0[t.branch]
+                gv = G0[t.branch] * t.e.params["Vf"]
+                b[t.ta] += gv
+                b[t.tb] -= gv
+            end
+        end
+        Is = Int[]; Js = Int[]; Vs = Float64[]
+        sizehint!(Is, 4length(EA)); sizehint!(Js, 4length(EA)); sizehint!(Vs, 4length(EA))
+        for k in eachindex(EA)
+            gk = EG[k]
+            gk > 0 || continue
+            a, c = newidx[EA[k]], newidx[EB[k]]
+            a > 0 && (push!(Is, a); push!(Js, a); push!(Vs, gk))
+            c > 0 && (push!(Is, c); push!(Js, c); push!(Vs, gk))
+            if a > 0 && c > 0
+                push!(Is, a); push!(Js, c); push!(Vs, -gk)
+                push!(Is, c); push!(Js, a); push!(Vs, -gk)
+            end
+        end
+        A = sparse(Is, Js, Vs, nk, nk)
+        rhs = zeros(nk)
+        for k in 1:N
+            newidx[k] > 0 && (rhs[newidx[k]] = b[k])
+        end
+        log(@sprintf("[dc] %d unknowns (%d plane cells), %d conductances, built in %.2f s", nk, m.ngrid, length(EA), time() - t0))
+
+        t1 = time()
+        x = try
+            cholesky(Symmetric(A)) \ rhs
+        catch err
+            err isa PosDefException || rethrow()
+            push!(msgs, "Matrix not positive definite; used a general solver.")
+            A \ rhs
+        end
+        log(@sprintf("[dc] solved in %.2f s", time() - t1))
+
+        fill!(v, NaN)
+        for k in 1:N
+            newidx[k] > 0 && (v[k] = x[newidx[k]])
+        end
+        for r in values(ref_of)
+            v[r] = 0.0
+        end
+        return v
     end
-    for r in values(ref_of)
-        v[r] = 0.0
+    for iter in 1:20
+        solve_once()
+        flipped = false
+        for t in diodes
+            vd = v[t.ta] - v[t.tb]
+            isnan(vd) && continue
+            want_off = vd < t.e.params["Vf"] - 1e-9
+            want_off != off[t.branch] && (off[t.branch] = want_off; flipped = true)
+        end
+        flipped || break
+        iter == 20 && push!(msgs, "Diode states did not settle after 20 iterations; results may be approximate.")
     end
+    for t in diodes
+        off[t.branch] && push!(msgs, "$(t.e.id) ($(t.e.ref)) is reverse-biased or below its forward voltage, so it conducts no current. Check its anode / cathode.")
+    end
+
+    G_series(t) = t.e.kind == :diode ? G0[t.branch] : EG[t.branch]
 
     # ── nominal rail voltages (VRM set points, propagated through series elements)
     nominal = fill(NaN, length(nets))
@@ -203,16 +241,32 @@ function solve_dc(board::BoardData, setup::SimSetup; settings::DCSettings = dc_s
     for (i, n) in enumerate(nets)
         isnan(nominal[i]) && netclass(setup, n) == :ground && (nominal[i] = 0.0)
     end
+    # through low-resistance parts (0 Ω, ferrites, inductors, sense resistors) the rail continues;
+    # a conducting diode shifts it by Vf. A load resistor's drop is intended, not IR drop.
     grow = true
     while grow
         grow = false
         for t in m.series_t
             a, c = netidx[t.e.net_pos], netidx[t.e.net_neg]
-            if isnan(nominal[a]) != isnan(nominal[c])
-                isnan(nominal[a]) ? (nominal[a] = nominal[c]) : (nominal[c] = nominal[a])
-                grow = true
+            isnan(nominal[a]) == isnan(nominal[c]) && continue
+            shift = if t.e.kind == :diode
+                get(off, t.branch, false) && continue
+                t.e.params["Vf"]
+            elseif 1 / G_series(t) <= 1.0
+                0.0
+            else
+                continue
             end
+            isnan(nominal[a]) ? (nominal[a] = nominal[c] + shift) : (nominal[c] = nominal[a] - shift)
+            grow = true
         end
+    end
+    # nets still without a nominal (behind a load resistor): their highest voltage, so the IR
+    # drop shows the drop along that net's own copper
+    for (i, _) in enumerate(nets)
+        isnan(nominal[i]) || continue
+        vs = [v[k] for k in 1:N if m.node_net[k] == i && !isnan(v[k])]
+        isempty(vs) || (nominal[i] = maximum(vs))
     end
 
     # ── maps
@@ -263,9 +317,11 @@ function solve_dc(board::BoardData, setup::SimSetup; settings::DCSettings = dc_s
     end
     series = Any[]
     for t in m.series_t
-        R = 1 / EG[t.branch]
+        R = 1 / G_series(t)
+        vd = v[t.ta] - v[t.tb]
+        I = t.e.kind != :diode ? vd / R : off[t.branch] ? 0.0 : (vd - t.e.params["Vf"]) / R
         push!(series, (id = t.e.id, ref = t.e.ref, kind = t.e.kind, net_pos = t.e.net_pos, net_neg = t.e.net_neg,
-                       R = R, I = (v[t.ta] - v[t.tb]) / R, vdrop = v[t.ta] - v[t.tb]))
+                       R = R, I = I, vdrop = vd))
     end
     rails = Any[]
     for (i, n) in enumerate(nets)
@@ -351,11 +407,15 @@ function overlay_range(r::DCResult, mode::AbstractString; net::AbstractString = 
         for M in r.jden, x in M
             isnan(x) || push!(vals, x)
         end
-        for t in r.traces
-            push!(vals, Float32(t.J))
-        end
-        # current crowds at pins/vias; clip the extreme tail so the plane is readable
-        hi = isempty(vals) ? 1f0 : sort!(vals)[clamp(ceil(Int, 0.995 * length(vals)), 1, length(vals))]
+        # current crowds at pins / vias: clip the extreme tail of the copper cells, but never
+        # below the traces. Shown on a log scale over three decades (planes, traces and pins at once).
+        cells = sort!(filter(isfinite, vals))
+        hi = isempty(cells) ? 1f0 : cells[clamp(ceil(Int, 0.995 * length(cells)), 1, length(cells))]
+        # traces in copper islands left out of the solve have no current (NaN): skip them
+        tj = Float32[t.J for t in r.traces if isfinite(t.J)]
+        isempty(tj) || (hi = max(hi, maximum(tj)))
+        hi = max(hi, 1f-6)
+        return (hi / 1000f0, hi)
     end
     return (0f0, max(hi, 1f-6))
 end

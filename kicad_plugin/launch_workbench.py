@@ -11,6 +11,11 @@ Where the Julia project is found (first match):
 
 Optional: PERPLEXFORGE_JULIA = path to the julia executable (default: julia on PATH, then
 the places the Julia installers use).
+Optional: PERPLEXFORGE_PKGIMAGES = "no" / "yes" to force Julia's package images off / on.
+
+Windows 11 Smart App Control blocks DLLs that aren't code-signed ("julia.exe - Bad Image",
+0xc0e90002). Julia compiles packages into such DLLs on the user's own PC, so when Smart App
+Control is enforcing, Julia runs with --pkgimages=no (no DLLs; starts slower).
 
 Windows: the workbench runs in a new console window.
 macOS:   the workbench runs in a new Terminal window, so first-run setup progress and any
@@ -101,6 +106,29 @@ def find_julia():
         f"If Julia is installed in an unusual place, set the PERPLEXFORGE_JULIA environment variable to {exe}.")
 
 
+def smart_app_control_enforcing():
+    """Windows 11 Smart App Control state: True when it is On (enforcing)."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\CI\Policy") as k:
+            state, _ = winreg.QueryValueEx(k, "VerifiedAndReputablePolicyState")
+        return state == 1                    # 0 off, 1 on (enforcing), 2 evaluation
+    except OSError:
+        return False
+
+
+def julia_flags():
+    """Extra julia flags: no package-image DLLs where Smart App Control would block them."""
+    want = os.environ.get("PERPLEXFORGE_PKGIMAGES", "").strip().lower()
+    if want in ("no", "0", "false", "off"):
+        return ["--pkgimages=no"]
+    if want in ("yes", "1", "true", "on"):
+        return []
+    return ["--pkgimages=no"] if smart_app_control_enforcing() else []
+
+
 def show_error(msg):
     """KiCad runs this script without a console: show problems in a message box."""
     try:
@@ -143,7 +171,7 @@ def main():
 
     home = find_perplexforge_home()
     julia = find_julia()
-    cmd = [julia, "--project=" + home, os.path.join(home, "bin", "launch.jl"), board_path]
+    cmd = [julia, *julia_flags(), "--project=" + home, os.path.join(home, "bin", "launch.jl"), board_path]
     cwd = os.path.dirname(board_path)
 
     if IS_MAC:

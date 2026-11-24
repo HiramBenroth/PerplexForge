@@ -51,7 +51,7 @@ struct KindSpec
     params::Vector{ParamSpec}
 end
 
-const KIND_ORDER = [:vrm, :sink, :resistor, :inductor, :ferrite, :short, :capacitor]
+const KIND_ORDER = [:vrm, :sink, :resistor, :inductor, :ferrite, :short, :diode, :capacitor]
 
 const KIND_SPECS = Dict{Symbol,KindSpec}(
     :vrm => KindSpec("VRM", :source, ("+ out", "− ref"), [
@@ -70,8 +70,13 @@ const KIND_SPECS = Dict{Symbol,KindSpec}(
     :ferrite => KindSpec("Ferrite bead", :passive, ("1", "2"), [
         ParamSpec("DCR", "Ω", 0.1,  :dc, "DC resistance"),
         ParamSpec("L",   "H", 1e-6, :ac, "Equivalent inductance")]),
-    :short => KindSpec("0 Ω / jumper", :passive, ("1", "2"), [
+    :short => KindSpec("0 Ω / jumper / switch", :passive, ("1", "2"), [
         ParamSpec("R", "Ω", 5e-4, :dc, "Resistance")]),
+    # forward-biased diode / LED: a Vf drop plus a series resistance; if the solution
+    # reverse-biases it, the DC solver treats it as open
+    :diode => KindSpec("Diode / LED", :passive, ("Anode", "Cathode"), [
+        ParamSpec("Vf", "V", 0.7, :dc, "Forward voltage"),
+        ParamSpec("Rs", "Ω", 0.5, :both, "Series resistance")]),
     :capacitor => KindSpec("Capacitor", :passive, ("1", "2"), [
         ParamSpec("C",   "F", 1e-7,  :ac, "Capacitance"),
         ParamSpec("ESR", "Ω", 0.01,  :ac, "Series resistance"),
@@ -176,6 +181,10 @@ function component_nets(c::Component)
     return [(n, counts[n]) for n in order]
 end
 
+"Is `net` a transistor's control net (gate / base), judging by KiCad's auto net name Net-(Q1-G)?"
+is_control_net(net, ref) = occursin(Regex("^Net-\\(" * replace(ref, r"[^A-Za-z0-9_]" => s"\\\0") * "-(G|B|Gate|GATE|Base|BASE)\\)\$"), net) ||
+                           occursin(r"(^|[/_])(GATE|BASE)$"i, net)
+
 ref_prefix(ref) = (m = match(r"^[A-Za-z_]+", ref); m === nothing ? "" : uppercase(m.match))
 
 const REGULATOR_HINT = r"LDO|REG|BUCK|BOOST|1117|78\d\d|MP\d{4}|TPS\d|LM\d{3}|AMS|RT\d{4}|AP\d{4}|MIC\d{4}|LT[C]?\d{4}|NCP\d"i
@@ -186,6 +195,8 @@ function guess_kind(c::Component, ::SimSetup)
     p == "R"  && return (v in ("0", "0R", "0Ω") ? :short : :resistor)
     p == "C"  && return :capacitor
     p == "FB" && return :ferrite
+    p in ("D", "LED") && return :diode
+    p == "Q" && return :short                   # a transistor switched on: drain–source (or C–E) as a low resistance
     p == "L"  && return (occursin(r"@|MHz"i, v) ? :ferrite : :inductor)
     p in ("JP", "SB", "F", "NT") && return :short
     occursin(REGULATOR_HINT, v) && return :vrm
@@ -229,8 +240,23 @@ function default_element(kind::Symbol, c::Component, s::SimSetup)
         pos = something(padnet("1"), get(nets, 1, ""))
         others = filter(!=(pos), nets)
         neg = something(padnet("2"), isempty(others) ? "" : others[1])
+        if kind == :diode
+            # KiCad's diode / LED symbols: pin 1 = cathode, pin 2 = anode
+            a, k = padnet("2"), padnet("1")
+            (a !== nothing && k !== nothing && a != k) && ((pos, neg) = (a, k))
+        elseif ref_prefix(c.ref) == "Q" && length(nets) >= 3
+            # transistor: the path is drain–source / collector–emitter, not the gate / base
+            main = filter(n -> !is_control_net(n, c.ref), nets)
+            if length(main) == 2
+                pos, neg = netclass(s, main[1]) == :ground ? (main[2], main[1]) : (main[1], main[2])
+            end
+        end
+        if kind == :diode && (occursin(r"LED"i, c.value) || occursin(r"LED"i, c.footprint_name) || ref_prefix(c.ref) == "LED")
+            params["Vf"] = 2.0
+            params["Rs"] = 10.0
+        end
         val = parse_si(c.value)
-        if val !== nothing
+        if val !== nothing && kind != :diode
             kind in (:resistor, :short) && (params["R"] = val)
             kind == :capacitor && (params["C"] = val)
             kind == :inductor && (params["L"] = val)
@@ -263,6 +289,59 @@ end
 # DC setup validation
 # ─────────────────────────────────────────────────────────────────────────────
 """
+Can current flow? Every VRM needs a closed path from its + to its − net through sinks
+and series elements (R, L, ferrite, 0 Ω, diode). If it has none, name the nets where the
+path stops and the parts there that have no model yet.
+"""
+function path_warnings(s::SimSetup, board::BoardData)
+    out = String[]
+    loads = [e for e in s.elements if e.kind == :sink || KIND_SPECS[e.kind].group == :passive && e.kind != :capacitor]
+    loads = [e for e in loads if !isempty(e.net_pos) && !isempty(e.net_neg) && e.net_pos != e.net_neg]
+    adj = Dict{String,Vector{Tuple{String,Element}}}()
+    for e in loads
+        push!(get!(adj, e.net_pos, Tuple{String,Element}[]), (e.net_neg, e))
+        push!(get!(adj, e.net_neg, Tuple{String,Element}[]), (e.net_pos, e))
+    end
+    function reach(from)
+        seen = Set([from])
+        todo = [from]
+        while !isempty(todo)
+            n = pop!(todo)
+            for (m, _) in get(adj, n, ())
+                m in seen && continue
+                push!(seen, m)
+                push!(todo, m)
+            end
+        end
+        return seen
+    end
+    modelled = Set(e.ref for e in s.elements)
+    for v in s.elements
+        (v.kind == :vrm && !isempty(v.net_pos) && !isempty(v.net_neg)) || continue
+        seen = reach(v.net_pos)
+        v.net_neg in seen && continue
+        if isempty(loads)
+            push!(out, "Nothing draws current from $(v.net_pos): add a sink (a load between a rail and ground), or model the " *
+                       "parts the current flows through (resistor, LED / diode, transistor as 0 Ω) back to $(v.net_neg).")
+            continue
+        end
+        # dead ends reachable from the rail: nets with a single element on them (other than the rail itself)
+        for n in sort!(collect(seen))
+            n == v.net_pos && continue
+            els = get(adj, n, ())
+            length(els) == 1 || continue
+            e = els[1][2]
+            parts = sort!(unique([c.ref for c in board.components if !(c.ref in modelled) &&
+                                  any(p -> p.net_name == n, c.pads)]))
+            push!(out, "No current path from $(v.net_pos) to $(v.net_neg): net $n is only connected to $(e.id)" *
+                       (isempty(parts) ? "." : "; model $(join(first(parts, 3), ", ")) (e.g. a Diode / LED, or a transistor as 0 Ω between its drain and source) to continue it."))
+        end
+        isempty(out) && push!(out, "No current path from $(v.net_pos) back to $(v.net_neg) through the defined elements, so no current flows.")
+    end
+    return out
+end
+
+"""
     validate_dc(setup, board) -> (errors, warnings, summary)
 
 Checks that the setup is complete enough for a DC (IR-drop) analysis and builds a
@@ -274,7 +353,6 @@ function validate_dc(s::SimSetup, board::BoardData)
     vrms  = [e for e in s.elements if e.kind == :vrm]
     sinks = [e for e in s.elements if e.kind == :sink]
     isempty(vrms) && push!(errors, "No VRM defined: a DC analysis needs at least one voltage source.")
-    isempty(sinks) && push!(warnings, "No sinks defined: nothing draws current, so there is no IR drop.")
     any(n -> n == :ground, values(s.netclass)) || push!(errors, "No net is classified as Ground.")
 
     for e in s.elements
@@ -309,6 +387,8 @@ function validate_dc(s::SimSetup, board::BoardData)
         end
     end
 
+    append!(warnings, path_warnings(s, board))
+
     # rails: one line per net that has a VRM or a sink on it
     rails = sort!(unique([e.net_pos for e in vcat(vrms, sinks) if !isempty(e.net_pos)]))
     for r in rails
@@ -316,8 +396,10 @@ function validate_dc(s::SimSetup, board::BoardData)
         rs = [e for e in sinks if e.net_pos == r]
         total = sum(e.params["I"] for e in rs; init = 0.0)
         src = isempty(rv) ? "NO VRM" : join(["VRM $(e.ref) " * format_si(e.params["V"], "V") for e in rv], ", ")
-        lds = isempty(rs) ? "no sinks" : "sinks " * join(["$(e.ref) " * format_si(e.params["I"], "A") for e in rs], ", ")
-        push!(summary, "$r: $src | $lds | total " * format_si(total, "A"))
+        ser = [e for e in s.elements if KIND_SPECS[e.kind].group == :passive && e.kind != :capacitor && (e.net_pos == r || e.net_neg == r)]
+        lds = !isempty(rs) ? "sinks " * join(["$(e.ref) " * format_si(e.params["I"], "A") for e in rs], ", ") :
+              !isempty(ser) ? "loads through " * join([e.id for e in ser], ", ") * " (current from the solve)" : "no loads"
+        push!(summary, "$r: $src | $lds" * (isempty(rs) ? "" : " | total " * format_si(total, "A")))
         isempty(rv) && !isempty(rs) && push!(errors, "Rail $r has sinks but no VRM.")
         length(rv) > 1 && push!(warnings, "Rail $r has $(length(rv)) VRMs (parallel sources).")
     end

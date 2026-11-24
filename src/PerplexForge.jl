@@ -42,22 +42,43 @@ const BANNER = raw"""
 const ROOT = normpath(joinpath(@__DIR__, ".."))
 const VERSION_TEXT = Ref("")
 
+"Dev build letters: 1 → a … 26 → z, 27 → aa (commits since the last release)."
+function dev_letters(n::Integer)
+    n <= 0 && return ""
+    out = Char[]
+    while n > 0
+        n, r = divrem(n - 1, 26)
+        pushfirst!(out, 'a' + r)
+    end
+    return String(out)
+end
+
+const DEV_COMMIT_SHA = Ref("")
+
 """
     version_text() -> String
 
-"v0.1.0" for an installed release; "v0.1.0-dev (abc1234)" when running from a git
-checkout (the development copy), so the two are easy to tell apart.
+"v0.2.0" for an installed release. Development builds count the commits since the last
+release: "v0.2.0a", "v0.2.0b", … (from the dev installers' DEV_VERSION file, or from git in
+a checkout). The commit is kept in `DEV_COMMIT_SHA` and shown in the console.
 """
 function version_text()
     isempty(VERSION_TEXT[]) || return VERSION_TEXT[]
     v = "v" * string(something(pkgversion(@__MODULE__), v"0.0.0"))
-    if isdir(joinpath(ROOT, ".git"))
-        sha = try
-            readchomp(pipeline(`git -C $ROOT rev-parse --short HEAD`; stderr = devnull))
-        catch
-            ""
-        end
-        v *= "-dev" * (isempty(sha) ? "" : " ($sha)")
+    vfile, cfile = joinpath(ROOT, "DEV_VERSION"), joinpath(ROOT, "DEV_COMMIT")
+    if isfile(vfile)                                       # "v0.2.0e 82dc6cc"
+        parts = split(strip(read(vfile, String)))
+        isempty(parts) || (v = String(parts[1]))
+        length(parts) >= 2 && (DEV_COMMIT_SHA[] = String(parts[2]))
+    elseif isfile(cfile)                                   # older dev installs: just the commit
+        DEV_COMMIT_SHA[] = strip(read(cfile, String))
+        v *= "-dev"
+    elseif isdir(joinpath(ROOT, ".git"))
+        git(args...) = try readchomp(pipeline(`git -C $ROOT $args`; stderr = devnull)) catch; "" end
+        DEV_COMMIT_SHA[] = git("rev-parse", "--short", "HEAD")
+        tag = git("describe", "--tags", "--abbrev=0", "--match", "v*")
+        n = isempty(tag) ? nothing : tryparse(Int, git("rev-list", "--count", "$tag..HEAD"))
+        v = n === nothing ? v * "-dev" : tag * dev_letters(n)
     end
     return VERSION_TEXT[] = v
 end
@@ -73,7 +94,7 @@ present, and open the workbench.
 """
 function run_workbench(filepath::String; on_simulate = nothing, block::Bool = false, show::Bool = true)
     println(BANNER)
-    println("  ", version_text())
+    println("  ", version_text(), isempty(DEV_COMMIT_SHA[]) ? "" : "   (development build, commit $(DEV_COMMIT_SHA[]))")
     println()
     isfile(filepath) || error("Board file not found: $filepath")
     filepath = abspath(filepath)
@@ -102,7 +123,7 @@ function run_workbench(filepath::String; on_simulate = nothing, block::Bool = fa
     println("[boot   ] Launching workbench...")
 
     launch_viewer(board, setup; on_simulate = on_simulate, startup_log = log_lines, block = block, show = show,
-                  version = version_text())
+                  version = version_text(), commit = DEV_COMMIT_SHA[])
     return board
 end
 

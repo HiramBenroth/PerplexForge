@@ -34,16 +34,35 @@ asset_path(parts...) = joinpath(ASSETS, parts...)
 "PNG as a Matrix{RGBA} (rows top → bottom), or nothing."
 load_png(path) = isfile(path) ? (try GLMakie.Makie.PNGFiles.load(path) catch; nothing end) : nothing
 
-"Replace GLMakie's default window/taskbar icon with the PerplexForge icon set (all sizes in assets/icons)."
+"""
+Replace GLMakie's default window / taskbar icon (Windows, Linux) with the PerplexForge icon
+set (every size in assets/icons). Each PNG is loaded on its own, so one unreadable file
+can't drop the whole set. Returns a message on failure, nothing on success.
+"""
 function set_window_icon!(screen)
     dir = asset_path("icons")
-    isdir(dir) || return
-    try
-        icons = [GLMakie.Makie.load_icon(f) for f in readdir(dir; join = true) if endswith(f, ".png")]
-        isempty(icons) || GLMakie.GLFW.SetWindowIcon(screen.glscreen, icons)
-    catch err
-        @warn "Could not set the window icon" exception = err
+    isdir(dir) || return "icon folder missing: $dir"
+    icons = Matrix{NTuple{4,UInt8}}[]
+    bad = String[]
+    for f in readdir(dir; join = true)
+        endswith(f, ".png") || continue
+        try
+            # same layout as Makie.load_icon, but any PNG flavour (RGB, grey, 16-bit) is converted to 8-bit RGBA
+            C = GLMakie.Makie.Colors
+            img = convert(Matrix{C.RGBA{C.N0f8}}, GLMakie.Makie.PNGFiles.load(f))
+            push!(icons, collect(reinterpret(NTuple{4,UInt8}, img)))
+        catch err
+            push!(bad, basename(f) * ": " * sprint(showerror, err))
+        end
     end
+    isempty(icons) && return "no usable window icon" * (isempty(bad) ? "" : " (" * join(bad, "; ") * ")")
+    try
+        GLMakie.GLFW.SetWindowIcon(screen.glscreen, icons)
+    catch err
+        return "could not set the window icon: " * sprint(showerror, err)
+    end
+    isempty(bad) || return "some window icon sizes were skipped: " * join(bad, "; ")
+    return nothing
 end
 
 """
@@ -97,7 +116,7 @@ MIT licence · github.com/HiramBenroth/PerplexForge"""
 
 const KIND_ALIASES = Dict("vrm" => :vrm, "sink" => :sink, "load" => :sink, "r" => :resistor, "resistor" => :resistor,
                           "l" => :inductor, "inductor" => :inductor, "fb" => :ferrite, "ferrite" => :ferrite,
-                          "short" => :short, "0r" => :short, "jumper" => :short, "c" => :capacitor, "capacitor" => :capacitor)
+                          "short" => :short, "0r" => :short, "jumper" => :short, "d" => :diode, "diode" => :diode, "led" => :diode, "c" => :capacitor, "capacitor" => :capacitor)
 
 const CLASS_ALIASES = Dict("power" => :power, "pwr" => :power, "ground" => :ground, "gnd" => :ground,
                            "digital" => :digital, "dig" => :digital, "none" => :unspecified, "unspecified" => :unspecified)
@@ -109,7 +128,7 @@ Commands:
   net <name>      comp <ref>              select a net / component
   deselect
   class <net|pattern*> <power|ground|digital|none>   assign a net class
-  element add <kind> <REF> [+net] [-net] [P=value …] kinds: vrm sink r l fb short c
+  element add <kind> <REF> [+net] [-net] [P=value …] kinds: vrm sink r l fb short d c
   element rm <id>   |   element list
   check                                   validate the DC setup only
   dc  (or run)                            run the DC IR-drop analysis (same as the ▶ button)
@@ -139,7 +158,7 @@ successful DC setup check. With `show = false` nothing is displayed (used for
 snapshots); the returned named tuple gives access to the figure, state and helpers.
 """
 function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing, startup_log = String[],
-                       block::Bool = false, show::Bool = true, version::AbstractString = "")
+                       block::Bool = false, show::Bool = true, version::AbstractString = "", commit::AbstractString = "")
     println("[viewer] Building geometry...")
     layers, unfilled = build_layers(board)
     zcu, slabs, diel_defined = stack_geometry(board, layers)
@@ -709,7 +728,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         if res.ok
             select_analysis!(:pi, :dc)
             if isempty(res.sinks)
-                status.text[] = @sprintf("DC solved in %.1f s", res.seconds)
+                status.text[] = "DC: " * join(["$(t.id) supplies $(format_si(t.I, "A"))" for t in res.vrms], ", ") *
+                                @sprintf(" (%.1f s)", res.seconds)
             else
                 w = res.sinks[argmax([s.pct for s in res.sinks])]
                 status.text[] = @sprintf("DC: worst sink %s −%.2f mV (%.2f%%)", w.id, w.drop_mV, w.pct)
@@ -879,7 +899,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
         if sub == "add"
             length(rest) < 3 && return say("Usage: element add <kind> <REF> [+net] [-net] [P=value …]")
             kind = get(KIND_ALIASES, lowercase(rest[2]), nothing)
-            kind === nothing && return say("Unknown kind '$(rest[2])'. Kinds: vrm sink r l fb short c")
+            kind === nothing && return say("Unknown kind '$(rest[2])'. Kinds: vrm sink r l fb short d c")
             c = get(st.comps, String(rest[3]), nothing)
             c === nothing && return say("No component '$(rest[3])'.")
             e = default_element(kind, c, st.setup)
@@ -1176,7 +1196,7 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     end
 
     # ── startup ──────────────────────────────────────────────────────────────
-    say("PerplexForge $version workbench ready.")
+    say("PerplexForge $version workbench ready." * (isempty(commit) ? "" : "  Development build, commit $commit."))
     foreach(l -> say(l), startup_log)
     say("Type 'help' for commands.  Left-drag orbit · right-drag pan · scroll zoom · click to select.")
     unfilled > 0 && say("NOTE: $unfilled pour(s) have no fill data and are drawn as boundaries only.")
@@ -1193,7 +1213,8 @@ function launch_viewer(board::BoardData, setup::SimSetup; on_simulate = nothing,
     if show
         screen = display(GLMakie.Screen(; title = "PerplexForge $version · " * boardname), fig)
         screen_ref[] = screen
-        set_window_icon!(screen)
+        msg = set_window_icon!(screen)
+        msg === nothing || say("NOTE: " * msg)
         set_dock_icon!(asset_path("macos", "icon_1024.png"))
         try                                                # below this the layout can't fit
             GLMakie.GLFW.SetWindowSizeLimits(screen.glscreen, 960, 600, GLMakie.GLFW.DONT_CARE, GLMakie.GLFW.DONT_CARE)

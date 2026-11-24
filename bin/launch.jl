@@ -19,6 +19,11 @@ if isempty(ARGS)
     exit(1)
 end
 
+if Base.JLOptions().use_pkgimages == 0
+    println("[launch ] Running without package images (Windows Smart App Control blocks Julia's compiled DLLs).")
+    println("[launch ] Starting takes longer; turning Smart App Control off removes the need for this.")
+end
+
 # First run (e.g. right after installing the KiCad add-on): install the Julia packages once.
 import Pkg
 function deps_ready()

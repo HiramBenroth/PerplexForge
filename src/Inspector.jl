@@ -332,6 +332,11 @@ function draw_symbol!(ax, e::Element)
         elseif e.kind == :short
             W([-1.0, 1.0], [0.5, 0.5]; color = col)
             text!(ax, Point2f(0, 0.65); text = "0 Ω", align = (:center, :bottom), fontsize = 12, color = col)
+        elseif e.kind == :diode
+            # anode (terminal 1) left → cathode right: triangle pointing at the bar
+            W([-1.0, -0.35], [0.5, 0.5]); W([0.35, 1.0], [0.5, 0.5])
+            poly!(ax, Point2f[(-0.35, 0.05), (-0.35, 0.95), (0.35, 0.5)]; color = darken(col, 0.55), strokecolor = col, strokewidth = 2)
+            W([0.35, 0.35], [0.05, 0.95]; color = col)
         elseif e.kind == :capacitor
             W([-1.0, -0.18], [0.5, 0.5]); W([0.18, 1.0], [0.5, 0.5])
             W([-0.18, -0.18], [-0.05, 1.05]; color = col); W([0.18, 0.18], [-0.05, 1.05]; color = col)
