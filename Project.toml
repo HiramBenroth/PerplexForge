@@ -1,6 +1,6 @@
 name = "PerplexForge"
 uuid = "7fadadf2-f37c-48a3-b4d7-4a3fa611637b"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Hiram "]
 
 [deps]
