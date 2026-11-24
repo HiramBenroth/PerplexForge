@@ -149,7 +149,16 @@ if ($text -match '"enable_server"\s*:\s*true') {
 
 # -- 5. Julia packages --------------------------------------------------------
 Step "Installing PerplexForge's Julia packages (several minutes, once)"
-& $julia --startup-file=no --project="$dest\julia" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+# Windows 11 Smart App Control blocks unsigned DLLs, and Julia's compiled package images are
+# DLLs built on this PC ("julia.exe - Bad Image ... 0xc0e90002"). While it is enforcing, build
+# (and later run) without package images; the KiCad plugin makes the same check.
+$sac = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" -Name VerifiedAndReputablePolicyState -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState
+$jflags = @("--startup-file=no")
+if ($sac -eq 1) {
+    Info "Smart App Control is on: Julia will run without package images (no compiled DLLs; slower start)."
+    $jflags += "--pkgimages=no"
+}
+& $julia @jflags --project="$dest\julia" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 if ($LASTEXITCODE) { Fail "Installing the Julia packages failed (see above). Check your internet connection and run this again." }
 
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue

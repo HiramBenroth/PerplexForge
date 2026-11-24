@@ -14,6 +14,10 @@ if "%~1"=="" (
     exit /b 1
 )
 
-"%PF_JULIA%" --project="%PF_HOME%" "%~dp0launch.jl" "%~f1"
+rem Windows 11 Smart App Control (state 0x1 = on) blocks Julia's compiled package DLLs: run without them
+set "PF_FLAGS="
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy" /v VerifiedAndReputablePolicyState 2>nul | find "0x1" >nul && set "PF_FLAGS=--pkgimages=no"
+
+"%PF_JULIA%" %PF_FLAGS% --project="%PF_HOME%" "%~dp0launch.jl" "%~f1"
 if errorlevel 1 pause
 endlocal
