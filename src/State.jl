@@ -6,7 +6,7 @@ using GLMakie
 using ..BoardParser: BoardData, Component
 using ..SimSetups
 
-export UIState, changed!, request!, sel_component, find_element, shown_rail, AC_MODE, SI_MODES, is_si_mode,
+export UIState, changed!, request!, sel_component, find_element, shown_rail, AC_MODE, SI_MODES, is_si_mode, OVERLAY_CMAP,
        CLASS_COLORS, KIND_COLORS, KIND_TAGS, SEVERITY_COLORS, lighten, darken, rgba
 
 lighten(c::RGBf, t) = RGBf(c.r + (1 - c.r) * t, c.g + (1 - c.g) * t, c.b + (1 - c.b) * t)
@@ -67,6 +67,9 @@ mutable struct UIState
 end
 
 const AC_MODE = "AC |V| at f"
+
+"Result colour scale: turbo without its near-black ends, so both extremes stay visible on the dark view."
+const OVERLAY_CMAP = cgrad([cgrad(:turbo)[x] for x in range(0.07, 0.93; length = 256)])
 "Overlays of the signal-integrity result: traces coloured by impedance, by target check, by reference type."
 const SI_MODES = ("SI impedance", "SI vs target", "SI reference")
 is_si_mode(m) = m in SI_MODES

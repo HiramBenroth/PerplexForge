@@ -153,7 +153,7 @@ function overlay_section!(p, st, h, r, modes::Vector{String})
         elseif mode == "IR drop"
             ((lo, hi), "IR drop (mV)  ·  |nominal − V|", Makie.automatic)
         else
-            ((lo, hi), "Current density (A/mm²)", Makie.automatic)
+            ((lo, hi), "Current density (A/mm², log scale)", vs -> [format_si(v, "") for v in vs])
         end
     elseif mode == AC_MODE && acr !== nothing && acr.ok && st.ac_freq[] > 0
         port = acr.ports[clamp(st.ac_port[], 1, length(acr.ports))]
@@ -166,9 +166,9 @@ function overlay_section!(p, st, h, r, modes::Vector{String})
     end
     if cb !== nothing
         (lims, label, fmt) = cb
-        blk!(p, Colorbar(h[r, 1:2]; limits = lims, colormap = :turbo, vertical = false, flipaxis = false,
+        blk!(p, Colorbar(h[r, 1:2]; limits = lims, colormap = OVERLAY_CMAP, vertical = false, flipaxis = false,
                          height = 10, label = label, tickformat = fmt, labelsize = 12, ticklabelsize = 11,
-                         tellwidth = false)); r += 1
+                         scale = mode == "Current density" ? log10 : identity, tellwidth = false)); r += 1
     end
     return r
 end

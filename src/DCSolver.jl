@@ -407,11 +407,13 @@ function overlay_range(r::DCResult, mode::AbstractString; net::AbstractString = 
         for M in r.jden, x in M
             isnan(x) || push!(vals, x)
         end
-        for t in r.traces
-            push!(vals, Float32(t.J))
-        end
-        # current crowds at pins/vias; clip the extreme tail so the plane is readable
-        hi = isempty(vals) ? 1f0 : sort!(vals)[clamp(ceil(Int, 0.995 * length(vals)), 1, length(vals))]
+        # current crowds at pins / vias: clip the extreme tail of the copper cells, but never
+        # below the traces. Shown on a log scale over three decades (planes, traces and pins at once).
+        cells = sort!(vals)
+        hi = isempty(cells) ? 1f0 : cells[clamp(ceil(Int, 0.995 * length(cells)), 1, length(cells))]
+        isempty(r.traces) || (hi = max(hi, Float32(maximum(t.J for t in r.traces))))
+        hi = max(hi, 1f-6)
+        return (hi / 1000f0, hi)
     end
     return (0f0, max(hi, 1f-6))
 end

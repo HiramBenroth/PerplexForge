@@ -111,7 +111,7 @@ function si_panel!(p::DynPanel, st::UIState, h, r; run!::Function, maxrows::Int 
     if res !== nothing && res.ok && is_si_mode(cur)
         if cur == "SI impedance"
             lo, hi = si_overlay_range(res)
-            blk!(p, Colorbar(h[r, 1:2]; limits = (lo, hi), colormap = :turbo, vertical = false, flipaxis = false, height = 10,
+            blk!(p, Colorbar(h[r, 1:2]; limits = (lo, hi), colormap = OVERLAY_CMAP, vertical = false, flipaxis = false, height = 10,
                              label = "Impedance (Ω): Zdiff where a pair runs coupled, else Z0", labelsize = 12,
                              ticklabelsize = 11, tellwidth = false)); r += 1
             line!(p, h, r, "magenta: no reference plane"; color = SI_STATUS_COLORS[:noref], fontsize = 11); r += 1

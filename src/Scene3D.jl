@@ -419,7 +419,22 @@ class_cat_color(cat, cls) = (c = CLASS_COLORS[cls];
 layer_cat_color(cat, L) =
     cat == :pours ? darken(L.color, 0.8) : cat == :pads ? lighten(L.color, 0.45) : cat == :vias ? lighten(L.color, 0.7) : L.color
 
+"Is a result overlay drawn on the copper right now (so the plain copper should step back)?"
+function overlay_active(st::UIState)
+    m = st.result_mode[]
+    ok(r) = r !== nothing && r.ok
+    m == "Off" && return false
+    m == AC_MODE && return ok(st.ac_result[]) && st.ac_freq[] > 0
+    is_si_mode(m) && return ok(st.si_result[])
+    return ok(st.result[])
+end
+
+const DIM_COPPER = RGBf(0.36, 0.37, 0.40)
+
 function vertex_colors(st::UIState, vnets, cat, L, mode, alpha)
+    # under an overlay the copper is neutral grey (pads a little lighter), so the result colours stand out
+    overlay_active(st) && return fill(rgba(cat == :pads ? lighten(DIM_COPPER, 0.25) : cat == :pours ? darken(DIM_COPPER, 0.7) :
+                                           DIM_COPPER, alpha), length(vnets))
     if mode != "Net class"
         return fill(rgba(layer_cat_color(cat, L), alpha), length(vnets))
     end
@@ -469,11 +484,13 @@ function build_scene!(pos, st::UIState, layers::Vector{LayerData}, zcu, slabs, b
         for (cat, md, rnets, rings) in parts
             vnets = [r == 0 ? "" : rnets[r] for r in md[3]]
             m3 = to_mesh3(md)
-            cols = lift((mode, _) -> vertex_colors(st, vnets, cat, L, mode, 1f0), st.color_by, st.class_rev)
+            cols = lift((mode, _...) -> vertex_colors(st, vnets, cat, L, mode, 1f0), st.color_by, st.class_rev, st.result_mode,
+                        st.result, st.ac_result, st.si_result, st.ac_freq)
             p = mesh!(scene, m3; color = cols, shading = NoShading, visible = V(cat, "Solid"))
             bindz!(p, zb, offs[cat]); pickmap[p] = (:net, L.name, vnets)
             if cat == :pours
-                tcols = lift((mode, _) -> vertex_colors(st, vnets, cat, L, mode, 0.3f0), st.color_by, st.class_rev)
+                tcols = lift((mode, _...) -> vertex_colors(st, vnets, cat, L, mode, 0.3f0), st.color_by, st.class_rev,
+                             st.result_mode, st.result, st.ac_result, st.si_result, st.ac_freq)
                 p = mesh!(scene, m3; color = tcols, shading = NoShading, transparency = true, visible = V(cat, "Translucent"))
                 bindz!(p, zb, offs[cat]); pickmap[p] = (:net, L.name, vnets)
             end
@@ -663,7 +680,7 @@ function build_scene!(pos, st::UIState, layers::Vector{LayerData}, zcu, slabs, b
     # shows) and twice: just above each layer for viewing from the top, and just below it
     # for viewing from the bottom.
     overlay_plots = Any[]
-    cmap = cgrad(:turbo)
+    cmap = OVERLAY_CMAP
     function set_overlay!(_...)
         foreach(p -> delete!(scene, p), overlay_plots)
         empty!(overlay_plots)
@@ -675,7 +692,9 @@ function build_scene!(pos, st::UIState, layers::Vector{LayerData}, zcu, slabs, b
         (res === nothing || !res.ok) && return
         rail = shown_rail(st, res)
         lo, hi = overlay_range(res, mode; net = rail)
-        col(x) = isnan(x) ? RGBAf(0, 0, 0, 0) : (c = cmap[clamp((x - lo) / (hi - lo), 0, 1)]; RGBAf(c.r, c.g, c.b, 1))
+        logscale = mode == "Current density"
+        frac(x) = logscale ? (log10(max(x, lo)) - log10(lo)) / (log10(hi) - log10(lo)) : (x - lo) / (hi - lo)
+        col(x) = isnan(x) ? RGBAf(0, 0, 0, 0) : (c = cmap[clamp(frac(x), 0, 1)]; RGBAf(c.r, c.g, c.b, 1))
         gr = res.grid
         xr = gr.x0 .. (gr.x0 + gr.nx * gr.h)
         yr = -(gr.y0 + gr.ny * gr.h) .. -gr.y0                  # plot y = −KiCad y
